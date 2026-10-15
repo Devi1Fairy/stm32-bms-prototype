@@ -40,4 +40,46 @@ BmsSampleStatus Bms_CheckSampleFreshness(
     uint32_t now_ms,
     uint32_t max_age_ms);
 
+/*
+ * 单体电压检查的汇总结果。
+ *
+ * 三个位图都采用相同的位置约定：
+ * bit0：第1节电池
+ * bit1：第2节电池
+ * bit2：第3节电池
+ *
+ * 对应位为1，表示该节存在这一类问题。
+ * uint8_t 有8位，本项目当前使用其中3位。
+ */
+typedef struct
+{
+    /* 哪些单体的有效、新鲜数据达到过压阈值。 */
+    uint8_t over_voltage_mask;
+
+    /* 哪些单体没有可用数据，或者电压数值不合理。 */
+    uint8_t invalid_mask;
+
+    /* 哪些单体的数据已经超时。 */
+    uint8_t timeout_mask;
+
+    /* 1表示整组指针或参数错误；0表示参数检查通过。 */
+    uint8_t input_error;
+} BmsVoltageReport;
+
+/*
+ * 检查整组中的各节单体电压。
+ *
+ * sample：整组测量数据；本函数只读取其中的 cell_mv。
+ * ov_threshold_mv：单体过压阈值，单位mV，必须大于0。
+ * now_ms：当前毫秒计数。
+ * max_age_ms：允许的最大数据年龄，必须大于0。
+ *
+ * 返回本次检查结果，不保存历史故障，也不直接控制负载。
+ */
+BmsVoltageReport Bms_CheckPackVoltages(
+    const BmsSample *sample,
+    int32_t ov_threshold_mv,
+    uint32_t now_ms,
+    uint32_t max_age_ms);
+
 #endif
