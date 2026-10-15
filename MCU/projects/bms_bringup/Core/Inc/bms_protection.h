@@ -82,4 +82,22 @@ BmsVoltageReport Bms_CheckPackVoltages(
     uint32_t now_ms,
     uint32_t max_age_ms);
 
+/* 单节电池的欠压检查结果，不代表整组电池的完整状态。 */
+typedef enum
+{
+    BMS_UV_DATA_INVALID = 0, /* 数据或阈值无效，当前无法判断 */
+    BMS_UV_NOT_TRIGGERED,   /* 没有触发本项欠压 */
+    BMS_UV_TRIGGERED        /* 已触发欠压 */
+} BmsUvResult;
+
+/*
+ * 检查一节电池是否欠压。
+ * cell：待检查的单体测量数据，只读取，不修改。
+ * threshold_mv：欠压阈值，单位 mV，必须大于 0。
+ * 本函数检查数值和基本有效性；采样超时仍由时效函数检查。
+ */
+BmsUvResult Bms_CheckCellUnderVoltage(
+    const BmsMeasurement *cell,
+    int32_t threshold_mv);
+
 #endif

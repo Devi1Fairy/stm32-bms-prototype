@@ -145,3 +145,36 @@ BmsVoltageReport Bms_CheckPackVoltages(
 
     return report;
 }
+
+BmsUvResult Bms_CheckCellUnderVoltage(
+    const BmsMeasurement *cell,
+    int32_t threshold_mv)
+{
+    /*
+     * 先检查指针，再访问对象成员。
+     * valid 不为 1 或没有来源的数据，不能用于正常电压判断。
+     */
+    if (cell == NULL ||
+        cell->valid != 1u ||
+        cell->source == BMS_SOURCE_NONE)
+    {
+        return BMS_UV_DATA_INVALID;
+    }
+
+    /* 负电压和非正数阈值不符合本函数的输入约定。 */
+    if (cell->value < 0 || threshold_mv <= 0)
+    {
+        return BMS_UV_DATA_INVALID;
+    }
+
+    /*
+     * 本项目约定：达到或低于欠压阈值，就触发欠压。
+     * value 为 0 且标志有效时，也应触发，不能写成 value <= 0 判无效。
+     */
+    if (cell->value <= threshold_mv)
+    {
+        return BMS_UV_TRIGGERED;
+    }
+
+    return BMS_UV_NOT_TRIGGERED;
+}

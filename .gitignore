@@ -29,3 +29,6 @@ Desktop.ini
 
 # Keil Assistant 自动生成的本机配置和日志
 /MCU/projects/bms_bringup/MDK-ARM/.vscode/
+
+# Local reference manuals; keep this directory out of Git.
+/手册/
