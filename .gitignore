@@ -23,3 +23,9 @@
 Thumbs.db
 Desktop.ini
 .DS_Store
+
+# 电脑端测试生成的程序
+/build/
+
+# Keil Assistant 自动生成的本机配置和日志
+/MCU/projects/bms_bringup/MDK-ARM/.vscode/

@@ -11,6 +11,7 @@
       <ToolsetNumber>0x4</ToolsetNumber>
       <ToolsetName>ARM-ADS</ToolsetName>
       <pArmCC>5060528::V5.06 update 5 (build 528)::ARMCC</pArmCC>
+      <pCCUsed>5060528::V5.06 update 5 (build 528)::ARMCC</pCCUsed>
       <uAC6>0</uAC6>
       <TargetOption>
         <TargetCommonOption>
@@ -388,9 +389,6 @@
           </Files>
         </Group>
         <Group>
-          <GroupName>::CMSIS</GroupName>
-        </Group>
-        <Group>
           <GroupName>Application/User/Core</GroupName>
           <Files>
             <File>
@@ -407,6 +405,36 @@
               <FileName>stm32f1xx_hal_msp.c</FileName>
               <FileType>1</FileType>
               <FilePath>../Core/Src/stm32f1xx_hal_msp.c</FilePath>
+            </File>
+            <File>
+              <FileName>main.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\Core\Inc\main.h</FilePath>
+            </File>
+            <File>
+              <FileName>stm32f1xx_hal_conf.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\Core\Inc\stm32f1xx_hal_conf.h</FilePath>
+            </File>
+            <File>
+              <FileName>stm32f1xx_it.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\Core\Inc\stm32f1xx_it.h</FilePath>
+            </File>
+            <File>
+              <FileName>bms_types.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\Core\Inc\bms_types.h</FilePath>
+            </File>
+            <File>
+              <FileName>bms_protection.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\Core\Inc\bms_protection.h</FilePath>
+            </File>
+            <File>
+              <FileName>bms_protection.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Core\Src\bms_protection.c</FilePath>
             </File>
           </Files>
         </Group>
@@ -479,6 +507,9 @@
               <FilePath>../Core/Src/system_stm32f1xx.c</FilePath>
             </File>
           </Files>
+        </Group>
+        <Group>
+          <GroupName>::CMSIS</GroupName>
         </Group>
       </Groups>
     </Target>

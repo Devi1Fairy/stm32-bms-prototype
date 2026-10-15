@@ -21,7 +21,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "bms_types.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
