@@ -168,3 +168,44 @@ BmsUvResult Bms_CheckCellUnderVoltage(
 
     return BMS_UV_NOT_TRIGGERED;
 }
+
+BmsTemperatureResult Bms_CheckTemperature(
+    const BmsMeasurement *temperature,
+    int32_t over_temp_dC,
+    uint32_t now_ms,
+    uint32_t max_age_ms)
+{
+    BmsSampleStatus sample_status;
+
+    /* 先区分调用参数错误与测量数据本身无效。 */
+    if (temperature == NULL || max_age_ms == 0u)
+    {
+        return BMS_TEMP_INPUT_ERROR;
+    }
+
+    /* 复用时效检查，避免每种保护都重写时间差计算。 */
+    sample_status = Bms_CheckSampleFreshness(
+        temperature, now_ms, max_age_ms);
+
+    if (sample_status == BMS_SAMPLE_INVALID)
+    {
+        return BMS_TEMP_DATA_INVALID;
+    }
+
+    if (sample_status == BMS_SAMPLE_TIMEOUT)
+    {
+        /* 旧温度值不能用于报告当前过温。 */
+        return BMS_TEMP_TIMEOUT;
+    }
+
+    /*
+     * 温度与阈值都使用 0.1℃，可以直接比较整数。
+     * 达到阈值就触发，包含刚好相等的情况。
+     */
+    if (temperature->value >= over_temp_dC)
+    {
+        return BMS_TEMP_OVER_LIMIT;
+    }
+
+    return BMS_TEMP_NORMAL;
+}

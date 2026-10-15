@@ -84,4 +84,28 @@ BmsUvResult Bms_CheckCellUnderVoltage(
     const BmsMeasurement *cell,
     int32_t threshold_mv);
 
+/* 一路温度数据的检查结果；只有 NORMAL 表示本项检查通过。 */
+typedef enum
+{
+    BMS_TEMP_INPUT_ERROR = 0, /* 指针或超时参数错误 */
+    BMS_TEMP_DATA_INVALID,    /* 测量数据未被标记为有效，或没有来源 */
+    BMS_TEMP_TIMEOUT,         /* 数据已经过期 */
+    BMS_TEMP_NORMAL,          /* 数据有效、未过期，且未达到过温阈值 */
+    BMS_TEMP_OVER_LIMIT       /* 达到或超过过温阈值 */
+} BmsTemperatureResult;
+
+/*
+ * 检查一路温度数据。
+ * temperature：温度测量对象，value 的单位必须是 0.1℃。
+ * over_temp_dC：过温阈值，单位 0.1℃；600 表示 60.0℃。
+ * now_ms、max_age_ms：当前毫秒计数与允许的最大数据年龄。
+ * 负温度可以有效，阈值也可以为零或负数。
+ * 实际测量范围由采样端检查并设置 valid，本函数读取该标志。
+ */
+BmsTemperatureResult Bms_CheckTemperature(
+    const BmsMeasurement *temperature,
+    int32_t over_temp_dC,
+    uint32_t now_ms,
+    uint32_t max_age_ms);
+
 #endif
