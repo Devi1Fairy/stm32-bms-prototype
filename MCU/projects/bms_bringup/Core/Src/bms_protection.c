@@ -260,3 +260,99 @@ BmsCurrentResult Bms_CheckCurrent(
 
     return BMS_CURRENT_NORMAL;
 }
+
+uint32_t Bms_CombineFaults(
+    const BmsVoltageReport *voltage,
+    BmsTemperatureResult temperature_result,
+    BmsCurrentResult current_result)
+{
+    /* 每次从零开始，避免上次结果混入本次检查。 */
+    uint32_t faults = BMS_FAULT_NONE;
+
+    if (voltage == NULL)
+    {
+        faults |= BMS_FAULT_INPUT_ERROR;
+        /* 仍继续汇总温度和电流，保留其他已知故障。 */
+    }
+    else
+    {
+        /* 独立判断各字段，因为不同电池可能同时存在不同问题。 */
+        if (voltage->over_voltage_mask != 0u)
+        {
+            faults |= BMS_FAULT_CELL_OV;
+        }
+
+        if (voltage->under_voltage_mask != 0u)
+        {
+            faults |= BMS_FAULT_CELL_UV;
+        }
+
+        if (voltage->invalid_mask != 0u)
+        {
+            faults |= BMS_FAULT_DATA_INVALID;
+        }
+
+        if (voltage->timeout_mask != 0u)
+        {
+            faults |= BMS_FAULT_SAMPLE_TIMEOUT;
+        }
+
+        if (voltage->input_error != 0u)
+        {
+            faults |= BMS_FAULT_INPUT_ERROR;
+        }
+    }
+
+    switch (temperature_result)
+    {
+        case BMS_TEMP_NORMAL:
+            break;
+
+        case BMS_TEMP_OVER_LIMIT:
+            faults |= BMS_FAULT_OVER_TEMP;
+            break;
+
+        case BMS_TEMP_DATA_INVALID:
+            faults |= BMS_FAULT_DATA_INVALID;
+            break;
+
+        case BMS_TEMP_TIMEOUT:
+            faults |= BMS_FAULT_SAMPLE_TIMEOUT;
+            break;
+
+        case BMS_TEMP_INPUT_ERROR:
+        default:
+            /* 未定义的枚举值也作为输入错误，不能当作正常。 */
+            faults |= BMS_FAULT_INPUT_ERROR;
+            break;
+    }
+
+    switch (current_result)
+    {
+        case BMS_CURRENT_NORMAL:
+            break;
+
+        case BMS_CURRENT_DISCHARGE_OVER_LIMIT:
+            faults |= BMS_FAULT_DISCHARGE_OC;
+            break;
+
+        case BMS_CURRENT_CHARGE_OVER_LIMIT:
+            faults |= BMS_FAULT_CHARGE_OC;
+            break;
+
+        case BMS_CURRENT_DATA_INVALID:
+            faults |= BMS_FAULT_DATA_INVALID;
+            break;
+
+        case BMS_CURRENT_TIMEOUT:
+            faults |= BMS_FAULT_SAMPLE_TIMEOUT;
+            break;
+
+        case BMS_CURRENT_INPUT_ERROR:
+        default:
+            faults |= BMS_FAULT_INPUT_ERROR;
+            break;
+    }
+
+    return faults;
+}

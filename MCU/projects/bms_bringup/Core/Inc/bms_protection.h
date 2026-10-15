@@ -133,4 +133,31 @@ BmsCurrentResult Bms_CheckCurrent(
     uint32_t now_ms,
     uint32_t max_age_ms);
 
+/*
+ * 每一位代表一种故障，可以同时记录多种故障。
+ * 注意：这里的位表示故障类型，不表示第几节电池。
+ */
+typedef enum
+{
+    BMS_FAULT_NONE           = 0u,       /* 本次没有发现已检查的故障 */
+    BMS_FAULT_CELL_OV        = 1u << 0,  /* 单体过压 */
+    BMS_FAULT_CELL_UV        = 1u << 1,  /* 单体欠压 */
+    BMS_FAULT_OVER_TEMP      = 1u << 2,  /* 过温 */
+    BMS_FAULT_DISCHARGE_OC   = 1u << 3,  /* 放电过流 */
+    BMS_FAULT_CHARGE_OC      = 1u << 4,  /* 充电过流 */
+    BMS_FAULT_DATA_INVALID   = 1u << 5,  /* 至少一路数据无效 */
+    BMS_FAULT_SAMPLE_TIMEOUT = 1u << 6,  /* 至少一路数据超时 */
+    BMS_FAULT_INPUT_ERROR    = 1u << 7   /* 检查参数或结果类型错误 */
+} BmsFaultFlag;
+
+/*
+ * 汇总已经得到的电压、温度和电流检查结果。
+ * 返回值是故障位图，使用 uint32_t 保存多个故障位。
+ * 只描述本次结果；历史故障的锁定由后续状态机负责。
+ */
+uint32_t Bms_CombineFaults(
+    const BmsVoltageReport *voltage,
+    BmsTemperatureResult temperature_result,
+    BmsCurrentResult current_result);
+
 #endif
