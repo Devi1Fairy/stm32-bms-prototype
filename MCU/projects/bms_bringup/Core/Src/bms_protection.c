@@ -209,3 +209,54 @@ BmsTemperatureResult Bms_CheckTemperature(
 
     return BMS_TEMP_NORMAL;
 }
+
+BmsCurrentResult Bms_CheckCurrent(
+    const BmsMeasurement *current,
+    int32_t discharge_limit_ma,
+    int32_t charge_limit_ma,
+    uint32_t now_ms,
+    uint32_t max_age_ms)
+{
+    BmsSampleStatus sample_status;
+
+    /* 两个方向的限值都必须是正数，方向由电流值的正负表示。 */
+    if (current == NULL ||
+        discharge_limit_ma <= 0 ||
+        charge_limit_ma <= 0 ||
+        max_age_ms == 0u)
+    {
+        return BMS_CURRENT_INPUT_ERROR;
+    }
+
+    sample_status = Bms_CheckSampleFreshness(
+        current, now_ms, max_age_ms);
+
+    if (sample_status == BMS_SAMPLE_INVALID)
+    {
+        return BMS_CURRENT_DATA_INVALID;
+    }
+
+    if (sample_status == BMS_SAMPLE_TIMEOUT)
+    {
+        /* 旧电流不用于报告当前是否过流。 */
+        return BMS_CURRENT_TIMEOUT;
+    }
+
+    /* 正方向达到限值，触发放电过流。 */
+    if (current->value >= discharge_limit_ma)
+    {
+        return BMS_CURRENT_DISCHARGE_OVER_LIMIT;
+    }
+
+    /*
+     * 将正数的充电限值变为负边界，再直接比较。
+     * 不对测量值取绝对值，避免 INT32_MIN 取负时溢出。
+     * charge_limit_ma 已确认是正数，因此对它取负可以安全表示。
+     */
+    if (current->value <= -charge_limit_ma)
+    {
+        return BMS_CURRENT_CHARGE_OVER_LIMIT;
+    }
+
+    return BMS_CURRENT_NORMAL;
+}

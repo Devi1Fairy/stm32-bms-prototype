@@ -108,4 +108,29 @@ BmsTemperatureResult Bms_CheckTemperature(
     uint32_t now_ms,
     uint32_t max_age_ms);
 
+/* 一路电流的检查结果；只有 NORMAL 表示本项检查通过。 */
+typedef enum
+{
+    BMS_CURRENT_INPUT_ERROR = 0,       /* 指针、限流参数或超时参数错误 */
+    BMS_CURRENT_DATA_INVALID,          /* 数据未标记有效，或没有来源 */
+    BMS_CURRENT_TIMEOUT,               /* 数据已经过期 */
+    BMS_CURRENT_NORMAL,                /* 数据有效、未过期，且没有过流 */
+    BMS_CURRENT_DISCHARGE_OVER_LIMIT,  /* 放电方向过流 */
+    BMS_CURRENT_CHARGE_OVER_LIMIT      /* 充电方向过流 */
+} BmsCurrentResult;
+
+/*
+ * 检查一路电流，value 的单位必须是 mA。
+ * 程序约定：正数为放电，负数为充电；接实物后需校验方向。
+ * discharge_limit_ma、charge_limit_ma 都填写正数，表示各方向的限值大小。
+ * 例如限值分别为1000、500时，+1000和-500都触发对应过流。
+ * 测量范围由采样端检查并设置 valid，本函数读取该标志。
+ */
+BmsCurrentResult Bms_CheckCurrent(
+    const BmsMeasurement *current,
+    int32_t discharge_limit_ma,
+    int32_t charge_limit_ma,
+    uint32_t now_ms,
+    uint32_t max_age_ms);
+
 #endif
