@@ -1,6 +1,6 @@
 # Git 与 GitHub 同步
 
-日期：2026-10-15。用户已明确选择创建公开仓库。[Devi1Fairy/stm32-bms-prototype](https://github.com/Devi1Fairy/stm32-bms-prototype) 已创建，本机已初始化 main 分支并关联 origin。以下记录首次上传步骤和日常同步方法，首次推送的完成结果见开发记录。
+日期：2026-10-15。用户已明确选择创建公开仓库。[Devi1Fairy/stm32-bms-prototype](https://github.com/Devi1Fairy/stm32-bms-prototype) 已创建，本机已初始化 main 分支并关联 origin，首次提交和推送已完成。远端源码、工程配置、许可证和文档已核对，详细证据见开发记录。以下第 3 节是已执行的首次流程，第 4 节用于日常同步。
 
 ## 1. 为什么用 Git 同步
 
