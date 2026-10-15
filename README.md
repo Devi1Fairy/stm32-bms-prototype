@@ -26,6 +26,7 @@
 - [最小工程逐项配置解释](docs/05_最小工程逐项配置解释.md)
 - [硬件购买链接与待确认项](docs/04_硬件购买链接.md)
 - [Git 与 GitHub 同步](docs/06_Git与GitHub同步.md)
+- [无板练习：采样数据类型](docs/07_无板练习_采样数据类型.md)
 
 ## 构建最小工程
 
@@ -41,7 +42,7 @@
 
 用户已完成 bms_bringup 工程生成和首次编译，本机 .ioc、.uvprojx、构建日志、MAP、AXF/HEX 均已找到。实际工具配置为 CubeMX 6.18.0（.ioc 记录）、CubeF1 1.8.7、Arm Compiler 5.06 update 5、STM32F1xx_DFP 2.2.0；目标为 F103ZE，使用 HSI 8 MHz 和 SWD。实际工程位于 MCU/projects/bms_bringup。
 
-当前唯一学习目标：先回顾此前每项配置的作用和选择原因，再阅读 main.c，说明 HAL_Init → SystemClock_Config → MX_GPIO_Init → while(1) 的执行顺序，并从源码确认当前时钟及 GPIO 配置。之后再练习不依赖外设的 C 保护逻辑；尚未开始该逻辑或 FreeRTOS 整合。
+开发板尚未到货。此前配置原理和 main.c 初始化流程已提供讲解，用户理解验收尚未单独记录。当前唯一练习目标：创建 bms_types.h，定义每路测量的数值、毫秒时间、有效性和来源，并在 main.c 的 USER CODE Includes 区域包含后编译。练习说明已准备，实际头文件和固件修改由用户操作，尚未完成。本轮不涉及接线、真实采样、保护逻辑或 FreeRTOS 整合。
 
 无硬件阶段已完成验收：**STM32F103ZE 最小 HAL 工程生成、Keil 编译通过、AXF/HEX 生成、工具版本与构建结果记录。** 构建通过不代表下载、运行和采样保护功能通过。
 
