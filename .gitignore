@@ -1,0 +1,25 @@
+# Keil build output directory for the current target.
+/MCU/projects/bms_bringup/MDK-ARM/bms_bringup/
+**/Objects/
+**/Listings/
+
+# Personal uVision window layouts and temporary backups.
+*.uvguix.*
+*.uvgui.*
+*.uvprojx.bak
+*.uvoptx.bak
+*.uvproj.bak
+*.uvopt.bak
+*.bak
+*~
+
+# Unused CMSIS DSP sources/examples and prebuilt math libraries.
+# The current target does not reference these directories.
+# Remove these exclusions before adding a future DSP dependency.
+/MCU/projects/bms_bringup/Drivers/CMSIS/DSP/
+/MCU/projects/bms_bringup/Drivers/CMSIS/Lib/
+
+# OS-generated files.
+Thumbs.db
+Desktop.ini
+.DS_Store
