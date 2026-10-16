@@ -446,6 +446,16 @@
               <FileType>5</FileType>
               <FilePath>..\Core\Inc\bms_state_machine.h</FilePath>
             </File>
+            <File>
+              <FileName>bms_recovery.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\Core\Inc\bms_recovery.h</FilePath>
+            </File>
+            <File>
+              <FileName>bms_recovery.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Core\Src\bms_recovery.c</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>
