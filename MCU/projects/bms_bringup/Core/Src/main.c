@@ -25,6 +25,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "bms_types.h"
+#include <stdio.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -35,9 +36,13 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 
-/* 单位都是毫秒；LED每翻转两次才完成一次亮灭。 */
-#define LED_PERIOD_MS   500u
-#define UART_PERIOD_MS  200u
+#define LED_PERIOD_MS       500u
+#define UART_PERIOD_MS      200u
+#define ADC_PERIOD_MS       100u
+
+/* 暂按参考电压3300mV估算，后续用实测值修正。 */
+#define ADC_REFERENCE_MV    3300u
+#define ADC_FULL_SCALE      4095u
 
 /* USER CODE END PD */
 
@@ -50,15 +55,17 @@
 
 /* USER CODE BEGIN PV */
 
-/* 保留原来的固定消息，末尾的回车换行用于电脑显示。 */
-static const uint8_t uart_message[] = "BMS UART1 OK\r\n";
-
-/* 分别记住上一次翻转LED、发送串口消息的时间。 */
+/* 三个动作分别记录上次执行时间。 */
 static uint32_t led_last_ms = 0u;
 static uint32_t uart_last_ms = 0u;
+static uint32_t adc_last_ms = 0u;
 
-/* 初值超出12位ADC范围，方便确认采样代码确实执行过。 */
+/* 超出12位范围的初值表示尚未完成采样。 */
 static volatile uint32_t adc_raw = 0xFFFFFFFFu;
+static volatile uint32_t adc_mv = 0u;
+
+/* 存放准备通过串口发送的一行文本。 */
+static char uart_tx_buffer[64];
 
 /* USER CODE END PV */
 
@@ -106,36 +113,16 @@ int main(void)
   MX_ADC1_Init();
   /* USER CODE BEGIN 2 */
 
-     /* 上电后做一次ADC内部校准，减小内部偏差。 */
+    /* 上电后做一次ADC内部校准。 */
     if (HAL_ADCEx_Calibration_Start(&hadc1) != HAL_OK)
     {
         Error_Handler();
     }
 
-    /* 软件启动一次转换。 */
-    if (HAL_ADC_Start(&hadc1) != HAL_OK)
-    {
-        Error_Handler();
-    }
-
-    /* 等待转换完成；10u是超时上限，单位为毫秒。 */
-    if (HAL_ADC_PollForConversion(&hadc1, 10u) != HAL_OK)
-    {
-        Error_Handler();
-    }
-
-    /* 读取原始数字量，正常范围为0～4095。 */
-    adc_raw = HAL_ADC_GetValue(&hadc1);
-
-    /* 本次读取结束，关闭ADC。 */
-    if (HAL_ADC_Stop(&hadc1) != HAL_OK)
-    {
-        Error_Handler();
-    }
-
-    /* 保留原有LED和串口计时。 */
+    /* 从初始化完成后开始计算三个周期。 */
     led_last_ms = HAL_GetTick();
     uart_last_ms = led_last_ms;
+    adc_last_ms = led_last_ms;
 
   /* USER CODE END 2 */
 
@@ -157,17 +144,60 @@ int main(void)
             HAL_GPIO_TogglePin(LED_STATUS_GPIO_Port, LED_STATUS_Pin);
         }
 
-        /* 串口使用自己的计时，不必等LED完成一轮亮灭。 */
-        if ((uint32_t)(now_ms - uart_last_ms) >= UART_PERIOD_MS)
+         /* 每100毫秒启动并读取一次ADC。 */
+        if ((uint32_t)(now_ms - adc_last_ms) >= ADC_PERIOD_MS)
+        {
+            adc_last_ms = now_ms;
+
+            if (HAL_ADC_Start(&hadc1) != HAL_OK)
+            {
+                Error_Handler();
+            }
+
+            /* 等待转换完成，超时上限为10毫秒。 */
+            if (HAL_ADC_PollForConversion(&hadc1, 10u) != HAL_OK)
+            {
+                Error_Handler();
+            }
+
+            adc_raw = HAL_ADC_GetValue(&hadc1);
+
+            if (HAL_ADC_Stop(&hadc1) != HAL_OK)
+            {
+                Error_Handler();
+            }
+
+            /* 整数换算为毫伏，加半个分母用于四舍五入。 */
+            adc_mv = (adc_raw * ADC_REFERENCE_MV + ADC_FULL_SCALE / 2u)
+                     / ADC_FULL_SCALE;
+        }
+
+        /* 首次有效采样后，每200毫秒发送最新读数。 */
+        if (((uint32_t)(now_ms - uart_last_ms) >= UART_PERIOD_MS)
+            && (adc_raw <= ADC_FULL_SCALE))
         {
             uart_last_ms = now_ms;
 
-            /* 发送仍然采用轮询方式；100u是超时上限，不是固定等待时间。 */
-            if (HAL_UART_Transmit(&huart1, uart_message,
-                                  (uint16_t)(sizeof(uart_message) - 1u),
+            /* 将数字转换成文本，写入发送缓冲区。 */
+            int length = snprintf(uart_tx_buffer,
+                                  sizeof(uart_tx_buffer),
+                                  "ADC raw=%lu, input=%lu mV\r\n",
+                                  (unsigned long)adc_raw,
+                                  (unsigned long)adc_mv);
+
+            /* 检查格式化失败或缓冲区容量不足。 */
+            if ((length <= 0)
+                || ((size_t)length >= sizeof(uart_tx_buffer)))
+            {
+                Error_Handler();
+            }
+
+            /* 只发送实际文本长度，不发送末尾空字符。 */
+            if (HAL_UART_Transmit(&huart1,
+                                  (const uint8_t *)uart_tx_buffer,
+                                  (uint16_t)length,
                                   100u) != HAL_OK)
             {
-                /* 本次基础实验发送失败时停在错误处理，方便调试定位。 */
                 Error_Handler();
             }
         }
