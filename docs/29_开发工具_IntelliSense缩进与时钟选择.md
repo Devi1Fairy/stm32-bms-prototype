@@ -1,14 +1,14 @@
 # 开发工具：IntelliSense、缩进与时钟选择
 
-日期：2026-10-17。前一步毫秒计时实验已由用户反馈成功，并保存于23935d3。本轮回答编辑器提示、缩进与外部晶振三个问题；助手只修改文档，以下配置由用户操作，修复尚未复测。
+日期：2026-10-17。前一步毫秒计时实验已由用户反馈成功，并保存于23935d3。更新：根目录IntelliSense配置、四空格settings.json及本机配置忽略规则已由用户写入，保存于9a6a533；提示消失尚未单独反馈。以下首次排查事实和操作保留供复现，不必重复覆盖已维护的根配置。HSE切换另见30号教程，目前仍为HSI。
 
 ## 已核对的事实
 
 - Keil最新已有构建日志2026-10-17 15:13:57：0错误、0警告。
 - 用户截图为Microsoft C/C++扩展C/C++(20)诊断，提示GPIOB、RCC_CR_HSION、RCC_CFGR_SW_HSI、RCC_CFGR_HPRE_DIV1、RCC_CFGR_PPRE1_DIV1未定义。
 - 五个宏均存在于项目Drivers/CMSIS/Device/ST/STM32F1xx/Include/stm32f103xe.h；Keil编译宏包含USE_HAL_DRIVER、STM32F103xE。无需在main.c重新定义寄存器或增加假的空宏。
-- 唯一现有c_cpp_properties.json位于MCU/projects/bms_bringup/MDK-ARM/.vscode。其defines已经包含正确芯片宏，includePath已经包含Core、HAL、CMSIS及ARMCC头文件。
-- 仓库根目录尚无.vscode/c_cpp_properties.json。根据当前工作区及截图路径，优先怀疑嵌套配置没有被仓库根目录窗口加载；还没有当前main.c的Log Diagnostics，不能把这个推断写成已经复测确认的根因。
+- 初次排查时唯一现有c_cpp_properties.json位于MCU/projects/bms_bringup/MDK-ARM/.vscode。其defines已经包含正确芯片宏，includePath已经包含Core、HAL、CMSIS及ARMCC头文件。
+- 初次排查时根目录尚无.vscode/c_cpp_properties.json，优先怀疑嵌套配置没有被仓库根目录窗口加载；现根配置已写入，但尚无当前main.c的Log Diagnostics或明确的提示消失反馈，不将推断写成已经复测确认的根因。
 - VS Code历史工作区同时出现仓库根目录与MDK-ARM目录，历史记录不能证明当前生效配置；下面统一以仓库根目录为工作区，避免路径歧义。
 - main.c中的Tab字符计数为0。当前看到的不同宽度是普通空格缩进差异；用户设置已有editor.detectIndentation=false。
 - CubeMX和main.c仍选择HSI 8 MHz；HSE_VALUE=8000000U只是外部晶振频率常量，不代表已经启用HSE。
@@ -132,7 +132,7 @@ CubeMX生成器采用自己的格式；VS Code设置不会改变CubeMX的模板�
 3. CubeMX与main.c仍为HSI，当前不把时钟切换混入本轮。
 4. 若用户改了C代码空白，Keil构建应保持0错误0警告。
 
-通过并补写记录后，用户执行：
+编辑器配置提交已完成（9a6a533），以下首次收尾命令保留供复现，无需重复提交相同配置。后续本轮状态更新可与30号时钟实验一起收尾：
 
 ```powershell
 Set-Location -LiteralPath "D:\嵌入式学习\电池管理系统"
@@ -160,5 +160,5 @@ c_cpp_properties.json应被新忽略规则排除，不加入上述暂存。Git�
 - 本地双USB核心板原理图第4页，负责Y1/Y2频率及连接依据。
 - [ST STM32F103xC/xD/xE数据手册DS5792 Rev13](https://www.st.com/resource/en/datasheet/stm32f103ze.pdf)，核对72 MHz系统频率、APB1 36 MHz及ADC 14 MHz约束；本地较旧版手册没有被替换。
 
-状态：前一步基本验收已通过；本轮编辑器修复与缩进设置待用户实施，HSE/PLL切换待后续独立实验。助手仅维护Markdown，未修改源码、.ioc、VS Code配置、.gitignore或Keil配置。
+状态：前一步基本验收已通过；根配置、缩进设置及忽略规则已由用户实施并提交，编辑器诊断消失待明确反馈；HSE/PLL切换按30号教程单独实施。助手仅维护Markdown，未修改源码、.ioc、VS Code配置、.gitignore或Keil配置。
 
