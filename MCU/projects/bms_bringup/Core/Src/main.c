@@ -18,6 +18,7 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "usart.h"
 #include "gpio.h"
 
 /* Private includes ----------------------------------------------------------*/
@@ -43,7 +44,8 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-
+/* 固定发送内容：\r\n让电脑收到后换到下一行。 */
+static const uint8_t uart_message[] = "BMS UART1 OK\r\n";
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -86,6 +88,7 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
 
   /* USER CODE END 2 */
@@ -97,6 +100,16 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+    /*
+   * 使用串口1发送消息。
+   * sizeof减1：不发送字符串末尾的\0。
+   * 100u：发送的超时等待上限，单位是毫秒。
+   */
+    if (HAL_UART_Transmit(&huart1, uart_message, (uint16_t)(sizeof(uart_message) - 1u), 100u) != HAL_OK)
+    {
+        /* 本次基础实验发送失败时，进入现有错误处理便于定位。 */
+        Error_Handler();
+    }
 
      /* D3低电平亮：把PB5拉低，让电流流过LED。 */
     HAL_GPIO_WritePin(LED_STATUS_GPIO_Port, LED_STATUS_Pin, GPIO_PIN_RESET);
