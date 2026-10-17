@@ -1,6 +1,6 @@
 # STM32 电池监测与保护控制原型
 
-更新时间：2026-10-17。项目状态：SWD连接、main入口调试、D3/PB5基本闪烁、USART1固定文本发送及HAL_GetTick独立周期实验已由用户反馈成功。根目录VS Code配置、四空格设置及本机配置忽略规则已保存于9a6a533；未定义提示消失尚未单独反馈。当前仍为HSI 8 MHz，本轮提供HSE 8 MHz经PLL×9得到72 MHz的独立实验教程，配置与上板待用户实施。最新已有Keil日志0错误0警告，不作为本轮时钟验收。十组控制软件电脑测试已通过，真实采样与保护输出未接入。
+更新时间：2026-10-17。项目状态：SWD、入口调试、LED、USART1发送、独立周期及HSE/PLL实验已由用户反馈成功。时钟源码与配置已保存于01bb62d，HSE 8 MHz×9、SYSCLK/HCLK 72 MHz、PCLK1 36 MHz、PCLK2 72 MHz；构建日志0错误0警告。下一步为ADC1/PC0通道10的GND与3V3两点单次采样，教程已给出，ADC代码与实测尚未完成。十组控制软件电脑测试已通过，真实电池采样与保护输出未接入。
 
 求职方向：MCU 开发、BMS、车载控制。已有嵌入式 Linux 网络流量分析项目，本项目补充外设驱动、实时任务、故障处理、状态机及 CAN 通信能力。
 
@@ -54,6 +54,7 @@
 - [首次上板：毫秒计时与独立周期](docs/28_首次上板_毫秒计时与独立周期.md)
 - [开发工具：IntelliSense、缩进与时钟选择](docs/29_开发工具_IntelliSense缩进与时钟选择.md)
 - [首次上板：HSE与72 MHz系统时钟](docs/30_首次上板_HSE与72MHz系统时钟.md)
+- [首次采样：ADC1单通道与已知输入](docs/31_首次采样_ADC1单通道与已知输入.md)
 
 PDF 手册按用途放在本机“手册”目录，已由 .gitignore 忽略；GitHub 保存手册索引，不包含 PDF。当前已整理10份，包含匹配F103ZE的数据手册、RM0008、双USB核心板规格书及原理图、内核资料和定时器应用笔记。
 
@@ -65,11 +66,11 @@ PDF 手册按用途放在本机“手册”目录，已由 .gitignore 忽略；G
 2. 按 F7 构建。基线结果为 0 错误、0 警告；产物在 MDK-ARM/bms_bringup 下。
 3. 如需修改图形配置，用 CubeMX 打开 [bms_bringup.ioc](MCU/projects/bms_bringup/bms_bringup.ioc)，使用 CubeF1 1.8.7 重新生成，再回到 Keil 构建。
 
-当前使用内部 HSI 8 MHz，保留 SWD；编译无需连接开发板。源码、配置和必要依赖随仓库保存，构建输出与个人界面布局由 .gitignore 排除。当前未使用的 CMSIS DSP 源码与预编译数学库也已排除，后续加入该依赖时再调整规则。
+当前使用外部HSE 8 MHz，经PLL×9得到SYSCLK/HCLK 72 MHz，APB1 36 MHz、APB2 72 MHz，保留SWD；编译无需连接开发板。源码、配置和必要依赖随仓库保存，构建输出与个人界面布局由.gitignore排除。当前未使用的CMSIS DSP源码与预编译数学库也已排除，后续加入该依赖时再调整规则。
 
 ## 当前推进点
 
-用户已完成 bms_bringup 工程生成和首次编译，本机 .ioc、.uvprojx、构建日志、MAP、AXF/HEX 均已找到。实际工具配置为 CubeMX 6.18.0（.ioc 记录）、CubeF1 1.8.7、Arm Compiler 5.06 update 5、STM32F1xx_DFP 2.2.0；目标为 F103ZE，使用 HSI 8 MHz 和 SWD。实际工程位于 MCU/projects/bms_bringup。
+用户已完成bms_bringup工程生成和首次编译，本机.ioc、.uvprojx、构建日志、MAP、AXF/HEX均已找到。实际工具配置为CubeMX 6.18.0（.ioc记录）、CubeF1 1.8.7、Arm Compiler 5.06 update 5、STM32F1xx_DFP 2.2.0；目标F103ZE，最初HSI 8 MHz，现配置HSE/PLL 72 MHz并保留SWD。实际工程位于MCU/projects/bms_bringup。
 
 用户确认开发板于2026-10-17到货。板卡资料、照片上的SWD标签、ST-LINK外壳针脚表及Flash算法已核对；供电电压、芯片完整丝印与实物PCB版本仍待进一步记录。首次上电D1亮、D3/D4/D5闪烁很可能来自预装程序；之后用户完成本项目下载、main入口断点、初始化单步及复位验证，均反馈通过。CPU寄存器解释已完成，25号笔记中的具体地址对应当时固件，重新构建后可能变化。
 
@@ -81,7 +82,9 @@ PDF 手册按用途放在本机“手册”目录，已由 .gitignore 忽略；G
 
 用户已完成28号实验并反馈成功：main.c以HAL_GetTick和两个独立时间记录安排D3每500 ms翻转、串口每200 ms发送，旧的两次HAL_Delay已移除，代码保存于23935d3（历史计时基线）。已有Keil构建日志2026-10-17 15:13:57为0错误0警告。上述周期为配置值与用户基本验收反馈，没有精确波形测量；HAL_UART_Transmit仍为阻塞发送，不称为完整实时调度或FreeRTOS。
 
-当前main与origin/main均为9a6a533。根.vscode/c_cpp_properties.json、四空格settings.json及相应忽略规则已写入；当前翻译单元诊断尚未提供，不据此单独宣布编辑器误报根因已最终确认。CubeMX与main.c仍为HSI 8 MHz、无PLL，本轮30号教程指导用户启用8 MHz HSE晶体模式、PLL×9、AHB /1、APB1 /2、APB2 /1及Flash两等待周期，随后核对SystemCoreClock、RCC实际状态并复测原有节奏。配置、重新构建和上板均未实施。真实自检、采样、GPIO负载控制、CAN、接收命令与格式化日志待实现。
+当前main与origin/main均为01bb62d。用户已实现30号HSE/PLL配置并反馈成功，main.c中的HSE模式、PLL来源/倍频、总线分频及FLASH_LATENCY_2与目标一致。构建日志2026-10-17 16:01:34为0错误0警告，晚于源码保存16:00:00；未提供运行时SystemCoreClock、RCC字段原始记录或独立频率测量，不把配置值代写成这些实测数值。根VS Code配置与四空格规则仍保留，编辑器诊断消失未单独反馈。
+
+当前ADC未启用，.ioc中的ADC节点仍显示36 MHz。本轮31号教程指导用户配置ADC1_IN10/PC0、ADC时钟/6得到12 MHz、单通道软件触发与较长采样窗口；启动时校准并读取一次，在Watch记录GND及3V3两个输入结果。ADC代码、两点实测均待用户实施，电位器周期采样与串口数值输出留作下一阶段。真实自检、BMS采样数据接入、GPIO负载控制、CAN、接收命令与格式化日志待实现。
 
 无硬件阶段已完成的电脑验证：**测量数据格式、独立保护、故障汇总、状态机、恢复区间与稳定计时、统一控制周期。** 前八组分别为9、11、11、25个场景、18、22、21、27个场景；第九组为35项恢复检查和6个联合场景，第十组为31个控制场景。Keil最新构建0错误0警告；电脑测试与编译不代表实际采样或负载断开通过。
 

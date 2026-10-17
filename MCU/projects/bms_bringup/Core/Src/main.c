@@ -18,6 +18,7 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "adc.h"
 #include "usart.h"
 #include "gpio.h"
 
@@ -55,6 +56,9 @@ static const uint8_t uart_message[] = "BMS UART1 OK\r\n";
 /* 分别记住上一次翻转LED、发送串口消息的时间。 */
 static uint32_t led_last_ms = 0u;
 static uint32_t uart_last_ms = 0u;
+
+/* 初值超出12位ADC范围，方便确认采样代码确实执行过。 */
+static volatile uint32_t adc_raw = 0xFFFFFFFFu;
 
 /* USER CODE END PV */
 
@@ -99,9 +103,37 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_USART1_UART_Init();
+  MX_ADC1_Init();
   /* USER CODE BEGIN 2 */
 
-    /* 外设初始化完成后，从此刻开始计算两个周期。 */
+     /* 上电后做一次ADC内部校准，减小内部偏差。 */
+    if (HAL_ADCEx_Calibration_Start(&hadc1) != HAL_OK)
+    {
+        Error_Handler();
+    }
+
+    /* 软件启动一次转换。 */
+    if (HAL_ADC_Start(&hadc1) != HAL_OK)
+    {
+        Error_Handler();
+    }
+
+    /* 等待转换完成；10u是超时上限，单位为毫秒。 */
+    if (HAL_ADC_PollForConversion(&hadc1, 10u) != HAL_OK)
+    {
+        Error_Handler();
+    }
+
+    /* 读取原始数字量，正常范围为0～4095。 */
+    adc_raw = HAL_ADC_GetValue(&hadc1);
+
+    /* 本次读取结束，关闭ADC。 */
+    if (HAL_ADC_Stop(&hadc1) != HAL_OK)
+    {
+        Error_Handler();
+    }
+
+    /* 保留原有LED和串口计时。 */
     led_last_ms = HAL_GetTick();
     uart_last_ms = led_last_ms;
 
@@ -151,6 +183,7 @@ void SystemClock_Config(void)
 {
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+  RCC_PeriphCLKInitTypeDef PeriphClkInit = {0};
 
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
@@ -177,6 +210,12 @@ void SystemClock_Config(void)
   RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
 
   if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_ADC;
+  PeriphClkInit.AdcClockSelection = RCC_ADCPCLK2_DIV6;
+  if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK)
   {
     Error_Handler();
   }
