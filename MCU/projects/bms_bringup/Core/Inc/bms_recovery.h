@@ -40,4 +40,3 @@ uint8_t Bms_RecoveryUpdate(
     uint32_t now_ms);
 
 #endif
-	
