@@ -21,10 +21,10 @@
 #include "adc.h"
 #include "usart.h"
 #include "gpio.h"
-
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "bms_types.h"
+#include "bms_controller.h"
 #include <stdio.h>
 /* USER CODE END Includes */
 
@@ -35,15 +35,12 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
 #define LED_PERIOD_MS       500u
 #define UART_PERIOD_MS      200u
-#define ADC_PERIOD_MS       100u
+#define BMS_PERIOD_MS       100u
 
-/* 暂按参考电压3300mV估算，后续用实测值修正。 */
-#define ADC_REFERENCE_MV    3300u
-#define ADC_FULL_SCALE      4095u
-
+/* 本步用这个模拟结果通过自检，不代表已经实现硬件自检。 */
+#define DEMO_SELF_TEST_PASSED  1u
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -58,14 +55,35 @@
 /* 三个动作分别记录上次执行时间。 */
 static uint32_t led_last_ms = 0u;
 static uint32_t uart_last_ms = 0u;
-static uint32_t adc_last_ms = 0u;
+static uint32_t bms_last_ms = 0u;
 
-/* 超出12位范围的初值表示尚未完成采样。 */
-static volatile uint32_t adc_raw = 0xFFFFFFFFu;
-static volatile uint32_t adc_mv = 0u;
+/* 采样快照和控制器都需要在多次循环之间保留。 */
+static BmsSample bms_sample = {0};
+static BmsController bms_controller;
+static char uart_tx_buffer[96];
 
-/* 存放准备通过串口发送的一行文本。 */
-static char uart_tx_buffer[64];
+/* 仅用于软件演示，不能直接作为真实电池的保护参数。 */
+static const BmsControllerConfig bms_config = {
+    .uv_threshold_mv = 3000,
+    .ov_threshold_mv = 4200,
+    .over_temp_dC = 600,          /* 60.0℃ */
+    .discharge_limit_ma = 1000,
+    .charge_limit_ma = 500,
+    .voltage_max_age_ms = 500u,
+    .temperature_max_age_ms = 500u,
+    .current_max_age_ms = 500u,
+    .recovery = {
+        .cell_min_mv = 3200,
+        .cell_max_mv = 4100,
+        .max_temperature_dC = 550,
+        .discharge_limit_ma = 800,
+        .charge_limit_ma = 300,
+        .voltage_max_age_ms = 500u,
+        .temperature_max_age_ms = 500u,
+        .current_max_age_ms = 500u,
+        .stable_time_ms = 2000u
+    }
+};
 
 /* USER CODE END PV */
 
@@ -77,7 +95,29 @@ void SystemClock_Config(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+/* 生成一轮新的模拟测量；本函数不读取ADC。 */
+static void Bms_MakeSimulatedSample(BmsSample *sample, uint32_t now_ms)
+{
+    uint32_t i;
 
+    for (i = 0u; i < BMS_CELL_COUNT; ++i)
+    {
+        sample->cell_mv[i].value = 3800;  /* 每节模拟为3.800V */
+        sample->cell_mv[i].timestamp_ms = now_ms;
+        sample->cell_mv[i].valid = 1u;
+        sample->cell_mv[i].source = BMS_SOURCE_SIMULATED;
+    }
+
+    sample->current_ma.value = 0;
+    sample->current_ma.timestamp_ms = now_ms;
+    sample->current_ma.valid = 1u;
+    sample->current_ma.source = BMS_SOURCE_SIMULATED;
+
+    sample->temperature_dC.value = 250;   /* 模拟25.0℃ */
+    sample->temperature_dC.timestamp_ms = now_ms;
+    sample->temperature_dC.valid = 1u;
+    sample->temperature_dC.source = BMS_SOURCE_SIMULATED;
+}
 /* USER CODE END 0 */
 
 /**
@@ -112,18 +152,12 @@ int main(void)
   MX_USART1_UART_Init();
   MX_ADC1_Init();
   /* USER CODE BEGIN 2 */
+    /* 只在启动时初始化一次，循环里不重复清空控制器。 */
+    Bms_ControllerInit(&bms_controller);
 
-    /* 上电后做一次ADC内部校准。 */
-    if (HAL_ADCEx_Calibration_Start(&hadc1) != HAL_OK)
-    {
-        Error_Handler();
-    }
-
-    /* 从初始化完成后开始计算三个周期。 */
     led_last_ms = HAL_GetTick();
     uart_last_ms = led_last_ms;
-    adc_last_ms = led_last_ms;
-
+    bms_last_ms = led_last_ms;
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -133,70 +167,56 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-        /* 读取当前毫秒计数；读取时间不会等待。 */
         uint32_t now_ms = HAL_GetTick();
 
-        /* 距离上次翻转已经过了500毫秒，才改变一次灯的状态。 */
+        /* D3继续作为心跳灯，不表示负载已经打开。 */
         if ((uint32_t)(now_ms - led_last_ms) >= LED_PERIOD_MS)
         {
-            /* 记下本次时间；未到下一周期时，主循环可以做其他事。 */
             led_last_ms = now_ms;
             HAL_GPIO_TogglePin(LED_STATUS_GPIO_Port, LED_STATUS_Pin);
         }
 
-         /* 每100毫秒启动并读取一次ADC。 */
-        if ((uint32_t)(now_ms - adc_last_ms) >= ADC_PERIOD_MS)
+        /* 先生成本轮模拟数据，再交给已有控制器处理。 */
+        if ((uint32_t)(now_ms - bms_last_ms) >= BMS_PERIOD_MS)
         {
-            adc_last_ms = now_ms;
+            bms_last_ms = now_ms;
+            Bms_MakeSimulatedSample(&bms_sample, now_ms);
 
-            if (HAL_ADC_Start(&hadc1) != HAL_OK)
-            {
-                Error_Handler();
-            }
-
-            /* 等待转换完成，超时上限为10毫秒。 */
-            if (HAL_ADC_PollForConversion(&hadc1, 10u) != HAL_OK)
-            {
-                Error_Handler();
-            }
-
-            adc_raw = HAL_ADC_GetValue(&hadc1);
-
-            if (HAL_ADC_Stop(&hadc1) != HAL_OK)
-            {
-                Error_Handler();
-            }
-
-            /* 整数换算为毫伏，加半个分母用于四舍五入。 */
-            adc_mv = (adc_raw * ADC_REFERENCE_MV + ADC_FULL_SCALE / 2u)
-                     / ADC_FULL_SCALE;
+            /* NONE表示没有新指令，本步应从自检进入待机。 */
+            Bms_ControllerStep(
+                &bms_controller,
+                &bms_sample,
+                &bms_config,
+                BMS_CMD_NONE,
+                DEMO_SELF_TEST_PASSED,
+                now_ms);
         }
 
-        /* 首次有效采样后，每200毫秒发送最新读数。 */
-        if (((uint32_t)(now_ms - uart_last_ms) >= UART_PERIOD_MS)
-            && (adc_raw <= ADC_FULL_SCALE))
+        /* 采样/控制先执行，随后发送最新状态。 */
+        if ((uint32_t)(now_ms - uart_last_ms) >= UART_PERIOD_MS)
         {
+            int length;
+
             uart_last_ms = now_ms;
+            length = snprintf(
+                uart_tx_buffer,
+                sizeof(uart_tx_buffer),
+                "BMS state=%u, faults=0x%08lX, load=%u\r\n",
+                (unsigned int)bms_controller.machine.state,
+                (unsigned long)bms_controller.active_faults,
+                (unsigned int)bms_controller.machine.load_enabled);
 
-            /* 将数字转换成文本，写入发送缓冲区。 */
-            int length = snprintf(uart_tx_buffer,
-                                  sizeof(uart_tx_buffer),
-                                  "ADC raw=%lu, input=%lu mV\r\n",
-                                  (unsigned long)adc_raw,
-                                  (unsigned long)adc_mv);
-
-            /* 检查格式化失败或缓冲区容量不足。 */
             if ((length <= 0)
                 || ((size_t)length >= sizeof(uart_tx_buffer)))
             {
                 Error_Handler();
             }
 
-            /* 只发送实际文本长度，不发送末尾空字符。 */
-            if (HAL_UART_Transmit(&huart1,
-                                  (const uint8_t *)uart_tx_buffer,
-                                  (uint16_t)length,
-                                  100u) != HAL_OK)
+            if (HAL_UART_Transmit(
+                    &huart1,
+                    (const uint8_t *)uart_tx_buffer,
+                    (uint16_t)length,
+                    100u) != HAL_OK)
             {
                 Error_Handler();
             }
