@@ -61,7 +61,8 @@ static uint32_t bms_last_ms = 0u;
 static BmsSample bms_sample = {0};
 static BmsController bms_controller;
 static char uart_tx_buffer[96];
-
+/* 在Keil Watch中写入命令；处理后会自动恢复为NONE。 */
+static volatile BmsCommand bms_debug_command = BMS_CMD_NONE;
 /* 仅用于软件演示，不能直接作为真实电池的保护参数。 */
 static const BmsControllerConfig bms_config = {
     .uv_threshold_mv = 3000,
@@ -176,18 +177,23 @@ int main(void)
             HAL_GPIO_TogglePin(LED_STATUS_GPIO_Port, LED_STATUS_Pin);
         }
 
-        /* 先生成本轮模拟数据，再交给已有控制器处理。 */
+        /* 每100毫秒处理一轮模拟采样和一条调试命令。 */
         if ((uint32_t)(now_ms - bms_last_ms) >= BMS_PERIOD_MS)
         {
+            BmsCommand command;
+
             bms_last_ms = now_ms;
             Bms_MakeSimulatedSample(&bms_sample, now_ms);
 
-            /* NONE表示没有新指令，本步应从自检进入待机。 */
+            /* 先取出命令，再清空入口，让一条命令只处理一次。 */
+            command = bms_debug_command;
+            bms_debug_command = BMS_CMD_NONE;
+
             Bms_ControllerStep(
                 &bms_controller,
                 &bms_sample,
                 &bms_config,
-                BMS_CMD_NONE,
+                command,
                 DEMO_SELF_TEST_PASSED,
                 now_ms);
         }
