@@ -63,6 +63,8 @@ static BmsController bms_controller;
 static char uart_tx_buffer[96];
 /* 在Keil Watch中写入命令；处理后会自动恢复为NONE。 */
 static volatile BmsCommand bms_debug_command = BMS_CMD_NONE;
+/* 第一节的模拟电压，可在Keil Watch中修改，单位mV。 */
+static volatile int32_t bms_sim_cell0_mv = 3800;
 /* 仅用于软件演示，不能直接作为真实电池的保护参数。 */
 static const BmsControllerConfig bms_config = {
     .uv_threshold_mv = 3000,
@@ -109,6 +111,8 @@ static void Bms_MakeSimulatedSample(BmsSample *sample, uint32_t now_ms)
         sample->cell_mv[i].source = BMS_SOURCE_SIMULATED;
     }
 
+    /* 其余两节保持3800mV，第一节使用调试器设定的模拟值。 */
+    sample->cell_mv[0].value = bms_sim_cell0_mv;
     sample->current_ma.value = 0;
     sample->current_ma.timestamp_ms = now_ms;
     sample->current_ma.valid = 1u;
@@ -207,10 +211,13 @@ int main(void)
             length = snprintf(
                 uart_tx_buffer,
                 sizeof(uart_tx_buffer),
-                "BMS state=%u, faults=0x%08lX, load=%u\r\n",
+                "BMS state=%u, faults=0x%08lX, latched=0x%08lX, "
+                "load=%u, clear=%u\r\n",
                 (unsigned int)bms_controller.machine.state,
                 (unsigned long)bms_controller.active_faults,
-                (unsigned int)bms_controller.machine.load_enabled);
+                (unsigned long)bms_controller.machine.latched_faults,
+                (unsigned int)bms_controller.machine.load_enabled,
+                (unsigned int)bms_controller.clear_allowed);
 
             if ((length <= 0)
                 || ((size_t)length >= sizeof(uart_tx_buffer)))
