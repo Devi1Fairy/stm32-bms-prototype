@@ -118,6 +118,28 @@ static BmsCommand Bms_TakePendingCommand(void)
     return command;
 }
 
+/* 根据本轮控制结果更新指示灯；板上LED都是低电平亮。 */
+static void Bms_UpdateIndicators(const BmsController *controller)
+{
+    /* 先准备好默认电平：两颗灯都熄灭。 */
+    GPIO_PinState run_level = GPIO_PIN_SET;
+    GPIO_PinState fault_level = GPIO_PIN_SET;
+
+    if (controller->machine.load_enabled == 1u)
+    {
+        run_level = GPIO_PIN_RESET;
+    }
+
+    /* 故障锁定期间一直亮，包括等待恢复和等待CLEAR的阶段。 */
+    if (controller->machine.state == BMS_STATE_FAULT_LOCK)
+    {
+        fault_level = GPIO_PIN_RESET;
+    }
+
+    HAL_GPIO_WritePin(LED_RUN_GPIO_Port, LED_RUN_Pin, run_level);
+    HAL_GPIO_WritePin(LED_FAULT_GPIO_Port, LED_FAULT_Pin, fault_level);
+}
+
 /* 生成一轮新的模拟测量；本函数不读取ADC。 */
 static void Bms_MakeSimulatedSample(BmsSample *sample, uint32_t now_ms)
 {
@@ -179,7 +201,7 @@ int main(void)
   /* USER CODE BEGIN 2 */
     /* 只在启动时初始化一次，循环里不重复清空控制器。 */
     Bms_ControllerInit(&bms_controller);
-
+    Bms_UpdateIndicators(&bms_controller);
     led_last_ms = HAL_GetTick();
     uart_last_ms = led_last_ms;
     bms_last_ms = led_last_ms;
@@ -239,6 +261,9 @@ int main(void)
                 command,
                 DEMO_SELF_TEST_PASSED,
                 now_ms);
+
+            /* 等状态机完成本轮处理后，再把最终结果显示到灯上。 */
+            Bms_UpdateIndicators(&bms_controller);
         }
 
         /* 采样/控制先执行，随后发送最新状态。 */
