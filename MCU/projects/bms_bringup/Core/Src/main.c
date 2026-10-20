@@ -21,6 +21,7 @@
 #include "adc.h"
 #include "usart.h"
 #include "gpio.h"
+
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "bms_types.h"
@@ -61,8 +62,12 @@ static uint32_t bms_last_ms = 0u;
 static BmsSample bms_sample = {0};
 static BmsController bms_controller;
 static char uart_tx_buffer[96];
-/* 在Keil Watch中写入命令；处理后会自动恢复为NONE。 */
+/* 单槽命令入口：由Watch或串口中断写入，主循环取走后清空。 */
 static volatile BmsCommand bms_debug_command = BMS_CMD_NONE;
+/* HAL把收到的一个字节写到这里；接收结束后由回调读取。 */
+static uint8_t uart_rx_byte = 0u;
+/* 中断只提出重启接收的请求，具体恢复放在主循环完成。 */
+static volatile uint8_t uart_rx_restart_required = 0u;
 /* 第一节的模拟电压，可在Keil Watch中修改，单位mV。 */
 static volatile int32_t bms_sim_cell0_mv = 3800;
 /* 仅用于软件演示，不能直接作为真实电池的保护参数。 */
@@ -98,6 +103,21 @@ void SystemClock_Config(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+/* 取走待处理命令；避免取出和清空之间被串口中断插入。 */
+static BmsCommand Bms_TakePendingCommand(void)
+{
+    BmsCommand command;
+    uint32_t saved_primask = __get_PRIMASK();
+
+    /* 这里只保护几个内存操作，随后马上恢复原来的中断状态。 */
+    __disable_irq();
+    command = bms_debug_command;
+    bms_debug_command = BMS_CMD_NONE;
+    __set_PRIMASK(saved_primask);
+
+    return command;
+}
+
 /* 生成一轮新的模拟测量；本函数不读取ADC。 */
 static void Bms_MakeSimulatedSample(BmsSample *sample, uint32_t now_ms)
 {
@@ -163,6 +183,12 @@ int main(void)
     led_last_ms = HAL_GetTick();
     uart_last_ms = led_last_ms;
     bms_last_ms = led_last_ms;
+
+    /* 第一次启动单字节接收；函数立即返回，不等待电脑发送。 */
+    if (HAL_UART_Receive_IT(&huart1, &uart_rx_byte, 1u) != HAL_OK)
+    {
+        Error_Handler();
+    }
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -173,6 +199,20 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
         uint32_t now_ms = HAL_GetTick();
+
+        /* UART异常或接收续接失败时重启接收；失败则下一轮再试。 */
+        if (uart_rx_restart_required != 0u)
+        {
+            /* 先清请求；之后若又产生新请求，仍能保留下来。 */
+            uart_rx_restart_required = 0u;
+
+            if ((HAL_UART_AbortReceive(&huart1) != HAL_OK)
+                || (HAL_UART_Receive_IT(
+                        &huart1, &uart_rx_byte, 1u) != HAL_OK))
+            {
+                uart_rx_restart_required = 1u;
+            }
+        }
 
         /* D3继续作为心跳灯，不表示负载已经打开。 */
         if ((uint32_t)(now_ms - led_last_ms) >= LED_PERIOD_MS)
@@ -189,9 +229,8 @@ int main(void)
             bms_last_ms = now_ms;
             Bms_MakeSimulatedSample(&bms_sample, now_ms);
 
-            /* 先取出命令，再清空入口，让一条命令只处理一次。 */
-            command = bms_debug_command;
-            bms_debug_command = BMS_CMD_NONE;
+            /* 取出并清空命令，避免与串口中断发生竞争。 */
+            command = Bms_TakePendingCommand();
 
             Bms_ControllerStep(
                 &bms_controller,
@@ -285,7 +324,57 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
+/* 收满一个字节时，HAL会在USART1中断中调用这个函数。 */
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+{
+    if (huart->Instance != USART1)
+    {
+        return;
+    }
 
+    /* 本次伴随UART错误时，丢弃该字节，交给主循环恢复接收。 */
+    if ((huart->ErrorCode != HAL_UART_ERROR_NONE)
+        || (uart_rx_restart_required != 0u))
+    {
+        uart_rx_restart_required = 1u;
+        return;
+    }
+
+    /* 中断只转换命令，不在这里执行状态机或打印日志。 */
+    switch (uart_rx_byte)
+    {
+        case 'S':
+            bms_debug_command = BMS_CMD_START;
+            break;
+
+        case 'T':
+            bms_debug_command = BMS_CMD_STOP;
+            break;
+
+        case 'C':
+            bms_debug_command = BMS_CMD_CLEAR;
+            break;
+
+        default:
+            /* 换行和其他字符直接忽略，不覆盖已有命令。 */
+            break;
+    }
+
+    /* 上一次只接收一个字节，完成后需要再次启动下一次接收。 */
+    if (HAL_UART_Receive_IT(&huart1, &uart_rx_byte, 1u) != HAL_OK)
+    {
+        uart_rx_restart_required = 1u;
+    }
+}
+
+/* UART检测到溢出、帧错误等情况时，提出恢复请求。 */
+void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
+{
+    if (huart->Instance == USART1)
+    {
+        uart_rx_restart_required = 1u;
+    }
+}
 /* USER CODE END 4 */
 
 /**
