@@ -19,6 +19,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "adc.h"
+#include "can.h"
 #include "usart.h"
 #include "gpio.h"
 
@@ -99,6 +100,12 @@ static const BmsControllerConfig bms_config = {
     }
 };
 
+/* 保留回环结果，便于在Keil Watch中检查。 */
+static volatile uint8_t can_loopback_passed = 0u;
+static CAN_RxHeaderTypeDef can_loopback_rx_header = {0};
+static uint8_t can_loopback_rx_data[8] = {0};
+static const uint8_t can_loopback_ok_message[] = "CAN loopback OK\r\n";
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -171,6 +178,85 @@ static void Bms_MakeSimulatedSample(BmsSample *sample, uint32_t now_ms)
     sample->temperature_dC.valid = 1u;
     sample->temperature_dC.source = BMS_SOURCE_SIMULATED;
 }
+
+/* 启动阶段发送并接收一帧，核对成功返回1，失败返回0。 */
+static uint8_t Bms_CanLoopbackTest(void)
+{
+    CAN_FilterTypeDef filter = {0};
+    CAN_TxHeaderTypeDef tx_header = {0};
+    const uint8_t tx_data[8] = {
+        0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88
+    };
+    uint32_t tx_mailbox = 0u;
+    uint32_t started_ms;
+    uint32_t i;
+
+    /* 掩码字段初始为0，先允许所有标识符进入FIFO0。 */
+    filter.FilterBank = 0u;
+    filter.FilterMode = CAN_FILTERMODE_IDMASK;
+    filter.FilterScale = CAN_FILTERSCALE_32BIT;
+    filter.FilterFIFOAssignment = CAN_FILTER_FIFO0;
+    filter.FilterActivation = ENABLE;
+
+    if ((HAL_CAN_ConfigFilter(&hcan, &filter) != HAL_OK)
+        || (HAL_CAN_Start(&hcan) != HAL_OK))
+    {
+        return 0u;
+    }
+
+    /* 标准数据帧：11位标识符，携带8字节测试数据。 */
+    tx_header.StdId = 0x123u;
+    tx_header.IDE = CAN_ID_STD;
+    tx_header.RTR = CAN_RTR_DATA;
+    tx_header.DLC = 8u;
+
+    if (HAL_CAN_AddTxMessage(
+            &hcan, &tx_header, tx_data, &tx_mailbox) != HAL_OK)
+    {
+        return 0u;
+    }
+
+    /* 本步只在启动阶段等待，超时后返回失败。 */
+    started_ms = HAL_GetTick();
+    while (HAL_CAN_GetRxFifoFillLevel(&hcan, CAN_RX_FIFO0) == 0u)
+    {
+        if ((uint32_t)(HAL_GetTick() - started_ms) >= 100u)
+        {
+            return 0u;
+        }
+    }
+
+    if (HAL_CAN_GetRxMessage(
+            &hcan, CAN_RX_FIFO0,
+            &can_loopback_rx_header, can_loopback_rx_data) != HAL_OK)
+    {
+        return 0u;
+    }
+
+    /* 一帧测试完成后停下CAN，随后进入原来的BMS循环。 */
+    if (HAL_CAN_Stop(&hcan) != HAL_OK)
+    {
+        return 0u;
+    }
+
+    if ((can_loopback_rx_header.IDE != CAN_ID_STD)
+        || (can_loopback_rx_header.RTR != CAN_RTR_DATA)
+        || (can_loopback_rx_header.StdId != 0x123u)
+        || (can_loopback_rx_header.DLC != 8u))
+    {
+        return 0u;
+    }
+
+    for (i = 0u; i < 8u; ++i)
+    {
+        if (can_loopback_rx_data[i] != tx_data[i])
+        {
+            return 0u;
+        }
+    }
+
+    return 1u;
+}
 /* USER CODE END 0 */
 
 /**
@@ -204,8 +290,25 @@ int main(void)
   MX_GPIO_Init();
   MX_USART1_UART_Init();
   MX_ADC1_Init();
+  MX_CAN_Init();
   /* USER CODE BEGIN 2 */
-    /* 只在启动时初始化一次，循环里不重复清空控制器。 */
+    /* 此时CubeMX生成的MX_CAN_Init已经执行完毕。 */
+    can_loopback_passed = Bms_CanLoopbackTest();
+    if (can_loopback_passed != 1u)
+    {
+        Error_Handler();
+    }
+
+    if (HAL_UART_Transmit(
+            &huart1,
+            can_loopback_ok_message,
+            (uint16_t)(sizeof(can_loopback_ok_message) - 1u),
+            100u) != HAL_OK)
+    {
+        Error_Handler();
+    }
+  
+  /* 只在启动时初始化一次，循环里不重复清空控制器。 */
     Bms_ControllerInit(&bms_controller);
     Bms_UpdateIndicators(&bms_controller);
     led_last_ms = HAL_GetTick();

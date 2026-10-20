@@ -646,6 +646,16 @@
               <FileType>5</FileType>
               <FilePath>..\Core\Inc\usart.h</FilePath>
             </File>
+            <File>
+              <FileName>can.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\Core\Inc\can.h</FilePath>
+            </File>
+            <File>
+              <FileName>can.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Core\Src\can.c</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>
@@ -870,6 +880,11 @@
                   </Cads>
                 </FileArmAds>
               </FileOption>
+            </File>
+            <File>
+              <FileName>stm32f1xx_hal_can.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Drivers\STM32F1xx_HAL_Driver\Src\stm32f1xx_hal_can.c</FilePath>
             </File>
           </Files>
         </Group>
