@@ -64,6 +64,8 @@ static BmsController bms_controller;
 static char uart_tx_buffer[96];
 /* 单槽命令入口：由Watch或串口中断写入，主循环取走后清空。 */
 static volatile BmsCommand bms_debug_command = BMS_CMD_NONE;
+/* 1：生成新模拟采样；0：保留旧快照，用来验证采样超时。 */
+static volatile uint8_t bms_sim_sampling_enabled = 1u;
 /* HAL把收到的一个字节写到这里；接收结束后由回调读取。 */
 static uint8_t uart_rx_byte = 0u;
 /* 中断只提出重启接收的请求，具体恢复放在主循环完成。 */
@@ -243,13 +245,18 @@ int main(void)
             HAL_GPIO_TogglePin(LED_STATUS_GPIO_Port, LED_STATUS_Pin);
         }
 
-        /* 每100毫秒处理一轮模拟采样和一条调试命令。 */
+        //* 每100毫秒执行控制；暂停采样时，保护检查仍然继续。 */
         if ((uint32_t)(now_ms - bms_last_ms) >= BMS_PERIOD_MS)
         {
             BmsCommand command;
 
             bms_last_ms = now_ms;
-            Bms_MakeSimulatedSample(&bms_sample, now_ms);
+
+            /* 只控制是否生成新采样，下面的保护检查始终执行。 */
+            if (bms_sim_sampling_enabled == 1u)
+            {
+                Bms_MakeSimulatedSample(&bms_sample, now_ms);
+            }
 
             /* 取出并清空命令，避免与串口中断发生竞争。 */
             command = Bms_TakePendingCommand();
@@ -378,6 +385,16 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 
         case 'C':
             bms_debug_command = BMS_CMD_CLEAR;
+            break;
+
+        case 'P':
+            /* 暂停模拟采样；主循环和保护检查继续运行。 */
+            bms_sim_sampling_enabled = 0u;
+            break;
+
+        case 'R':
+            /* 恢复生成新采样；解除故障仍需满足条件并发送C。 */
+            bms_sim_sampling_enabled = 1u;
             break;
 
         default:
