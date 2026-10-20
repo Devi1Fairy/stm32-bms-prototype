@@ -72,6 +72,10 @@ static uint8_t uart_rx_byte = 0u;
 static volatile uint8_t uart_rx_restart_required = 0u;
 /* 第一节的模拟电压，可在Keil Watch中修改，单位mV。 */
 static volatile int32_t bms_sim_cell0_mv = 3800;
+/* 模拟温度，单位0.1℃：250表示25.0℃。 */
+static volatile int32_t bms_sim_temperature_dC = 250;
+/* 模拟电流，单位mA：正数表示放电，负数表示充电。 */
+static volatile int32_t bms_sim_current_ma = 0;
 /* 仅用于软件演示，不能直接作为真实电池的保护参数。 */
 static const BmsControllerConfig bms_config = {
     .uv_threshold_mv = 3000,
@@ -157,12 +161,12 @@ static void Bms_MakeSimulatedSample(BmsSample *sample, uint32_t now_ms)
 
     /* 其余两节保持3800mV，第一节使用调试器设定的模拟值。 */
     sample->cell_mv[0].value = bms_sim_cell0_mv;
-    sample->current_ma.value = 0;
+    sample->current_ma.value = bms_sim_current_ma;
     sample->current_ma.timestamp_ms = now_ms;
     sample->current_ma.valid = 1u;
     sample->current_ma.source = BMS_SOURCE_SIMULATED;
 
-    sample->temperature_dC.value = 250;   /* 模拟25.0℃ */
+    sample->temperature_dC.value = bms_sim_temperature_dC;
     sample->temperature_dC.timestamp_ms = now_ms;
     sample->temperature_dC.valid = 1u;
     sample->temperature_dC.source = BMS_SOURCE_SIMULATED;
