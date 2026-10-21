@@ -44,6 +44,11 @@
 #define CAN_STATUS_PERIOD_MS  1000u
 #define CAN_STATUS_STD_ID     0x301u
 
+#define ADC_MAX_CODE          4095u
+#define ADC_REFERENCE_MV      3300u
+#define DEMO_CELL0_MIN_MV     2800u
+#define DEMO_CELL0_SPAN_MV    1600u
+
 /* 本步用这个模拟结果通过自检，不代表已经实现硬件自检。 */
 #define DEMO_SELF_TEST_PASSED  1u
 /* USER CODE END PD */
@@ -74,8 +79,14 @@ static volatile uint8_t bms_sim_sampling_enabled = 1u;
 static uint8_t uart_rx_byte = 0u;
 /* 中断只提出重启接收的请求，具体恢复放在主循环完成。 */
 static volatile uint8_t uart_rx_restart_required = 0u;
-/* 第一节的模拟电压，可在Keil Watch中修改，单位mV。 */
-static volatile int32_t bms_sim_cell0_mv = 3800;
+/* ADC原始读数，以及按3.3V参考估算的实际输入毫伏值。 */
+static volatile uint32_t bms_adc_raw = 0u;
+static volatile uint32_t bms_adc_input_mv = 0u;
+/* 电位器位置映射成的模拟单体电压，不是PC0引脚电压。 */
+static volatile int32_t bms_adc_cell0_mv = 0;
+/* 上一次实际读取是否成功；暂停采样时保留上次结果。 */
+static volatile uint8_t bms_adc_read_ok = 0u;
+static volatile uint32_t bms_adc_error_count = 0u;
 /* 模拟温度，单位0.1℃：250表示25.0℃。 */
 static volatile int32_t bms_sim_temperature_dC = 250;
 /* 模拟电流，单位mA：正数表示放电，负数表示充电。 */
@@ -174,21 +185,56 @@ static void Bms_UpdateIndicators(const BmsController *controller)
     HAL_GPIO_WritePin(LED_FAULT_GPIO_Port, LED_FAULT_Pin, fault_level);
 }
 
-/* 生成一轮新的模拟测量；本函数不读取ADC。 */
-static void Bms_MakeSimulatedSample(BmsSample *sample, uint32_t now_ms)
+/* 读取一次电位器；成功返回1，失败返回0，旧读数保留。 */
+static uint8_t Bms_ReadPotentiometer(void)
+{
+    uint32_t raw;
+
+    if (HAL_ADC_Start(&hadc1) != HAL_OK)
+    {
+        return 0u;
+    }
+
+    /* 等待本次转换，等待参数为2ms，不使用无限等待。 */
+    if (HAL_ADC_PollForConversion(&hadc1, 2u) != HAL_OK)
+    {
+        (void)HAL_ADC_Stop(&hadc1);
+        return 0u;
+    }
+
+    raw = HAL_ADC_GetValue(&hadc1);
+    if ((HAL_ADC_Stop(&hadc1) != HAL_OK) || (raw > ADC_MAX_CODE))
+    {
+        return 0u;
+    }
+
+    bms_adc_raw = raw;
+    /* 加半个除数再整除，实现整数四舍五入。 */
+    bms_adc_input_mv =
+        (raw * ADC_REFERENCE_MV + ADC_MAX_CODE / 2u) / ADC_MAX_CODE;
+
+    /* 0～4095映射为2800～4400mV，方便旋钮触发欠压和过压。 */
+    bms_adc_cell0_mv = (int32_t)(
+        DEMO_CELL0_MIN_MV
+        + (raw * DEMO_CELL0_SPAN_MV + ADC_MAX_CODE / 2u) / ADC_MAX_CODE);
+
+    return 1u;
+}
+
+/* 第一节由ADC读取电位器，其余电压、电流和温度仍由软件模拟。 */
+static void Bms_UpdateDemoSample(BmsSample *sample, uint32_t now_ms)
 {
     uint32_t i;
 
-    for (i = 0u; i < BMS_CELL_COUNT; ++i)
+    /* 从下标1开始，只生成第2、3节的固定模拟电压。 */
+    for (i = 1u; i < BMS_CELL_COUNT; ++i)
     {
-        sample->cell_mv[i].value = 3800;  /* 每节模拟为3.800V */
+        sample->cell_mv[i].value = 3800;
         sample->cell_mv[i].timestamp_ms = now_ms;
         sample->cell_mv[i].valid = 1u;
         sample->cell_mv[i].source = BMS_SOURCE_SIMULATED;
     }
 
-    /* 其余两节保持3800mV，第一节使用调试器设定的模拟值。 */
-    sample->cell_mv[0].value = bms_sim_cell0_mv;
     sample->current_ma.value = bms_sim_current_ma;
     sample->current_ma.timestamp_ms = now_ms;
     sample->current_ma.valid = 1u;
@@ -198,8 +244,23 @@ static void Bms_MakeSimulatedSample(BmsSample *sample, uint32_t now_ms)
     sample->temperature_dC.timestamp_ms = now_ms;
     sample->temperature_dC.valid = 1u;
     sample->temperature_dC.source = BMS_SOURCE_SIMULATED;
-}
 
+    sample->cell_mv[0].source = BMS_SOURCE_ADC;
+    bms_adc_read_ok = Bms_ReadPotentiometer();
+
+    if (bms_adc_read_ok == 1u)
+    {
+        sample->cell_mv[0].value = bms_adc_cell0_mv;
+        sample->cell_mv[0].timestamp_ms = now_ms;
+        sample->cell_mv[0].valid = 1u;
+    }
+    else
+    {
+        /* 失败时标记无效，保留旧值和旧时间，交给保护逻辑处理。 */
+        sample->cell_mv[0].valid = 0u;
+        bms_adc_error_count++;
+    }
+}
 /* 启动阶段发送并接收一帧，核对成功返回1，失败返回0。 */
 static uint8_t Bms_CanLoopbackTest(void)
 {
@@ -399,6 +460,12 @@ int main(void)
   MX_ADC1_Init();
   MX_CAN_Init();
   /* USER CODE BEGIN 2 */
+    /* 外设已初始化，先做一次ADC内部自校准，再开始采样。 */
+    if (HAL_ADCEx_Calibration_Start(&hadc1) != HAL_OK)
+    {
+        Error_Handler();
+    }
+  
     /* 此时CubeMX生成的MX_CAN_Init已经执行完毕。 */
     can_loopback_passed = Bms_CanLoopbackTest();
     if (can_loopback_passed != 1u)
@@ -476,7 +543,7 @@ int main(void)
             /* 只控制是否生成新采样，下面的保护检查始终执行。 */
             if (bms_sim_sampling_enabled == 1u)
             {
-                Bms_MakeSimulatedSample(&bms_sample, now_ms);
+                Bms_UpdateDemoSample(&bms_sample, now_ms);;
             }
 
             /* 取出并清空命令，避免与串口中断发生竞争。 */
