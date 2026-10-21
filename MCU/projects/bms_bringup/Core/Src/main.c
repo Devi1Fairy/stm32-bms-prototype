@@ -41,6 +41,9 @@
 #define UART_PERIOD_MS      200u
 #define BMS_PERIOD_MS       100u
 
+#define CAN_STATUS_PERIOD_MS  1000u
+#define CAN_STATUS_STD_ID     0x301u
+
 /* 本步用这个模拟结果通过自检，不代表已经实现硬件自检。 */
 #define DEMO_SELF_TEST_PASSED  1u
 /* USER CODE END PD */
@@ -105,6 +108,24 @@ static volatile uint8_t can_loopback_passed = 0u;
 static CAN_RxHeaderTypeDef can_loopback_rx_header = {0};
 static uint8_t can_loopback_rx_data[8] = {0};
 static const uint8_t can_loopback_ok_message[] = "CAN loopback OK\r\n";
+
+/* 上次安排发送状态帧的时间，单位ms。 */
+static uint32_t can_status_last_ms = 0u;
+
+/* 最近一次发送、接收的8字节数据，便于Watch查看。 */
+static uint8_t can_status_tx_data[8] = {0};
+static uint8_t can_status_rx_data[8] = {0};
+static CAN_RxHeaderTypeDef can_status_rx_header = {0};
+
+/* tx记录提交成功次数；rx记录从FIFO取出帧的次数。 */
+static volatile uint32_t can_status_tx_count = 0u;
+static volatile uint32_t can_status_rx_count = 0u;
+/* 记录软件检查遇到异常的次数，不是CAN硬件错误计数器。 */
+static volatile uint32_t can_status_error_count = 0u;
+/* 1表示最近收到的帧与我们发送的帧一致。 */
+static volatile uint8_t can_status_rx_matches = 0u;
+/* 下一帧要使用的序号，超过255后从0重新开始。 */
+static uint8_t can_status_next_sequence = 0u;
 
 /* USER CODE END PV */
 
@@ -257,6 +278,92 @@ static uint8_t Bms_CanLoopbackTest(void)
 
     return 1u;
 }
+
+/* 每轮主循环调用：先收已有的帧，到时间再发，不等待收发完成。 */
+static void Bms_CanStatusPoll(uint32_t now_ms)
+{
+    CAN_TxHeaderTypeDef tx_header = {0};
+    uint32_t tx_mailbox = 0u;
+    uint32_t i;
+
+    /* FIFO里有帧才读取；每次调用最多处理一帧。 */
+    if (HAL_CAN_GetRxFifoFillLevel(&hcan, CAN_RX_FIFO0) > 0u)
+    {
+        if (HAL_CAN_GetRxMessage(
+                &hcan, CAN_RX_FIFO0,
+                &can_status_rx_header, can_status_rx_data) != HAL_OK)
+        {
+            can_status_error_count++;
+            return;
+        }
+
+        can_status_rx_count++;
+        can_status_rx_matches = 1u;
+
+        /* 先核对帧头，再逐字节比较本轮发出的数据。 */
+        if ((can_status_rx_header.IDE != CAN_ID_STD)
+            || (can_status_rx_header.RTR != CAN_RTR_DATA)
+            || (can_status_rx_header.StdId != CAN_STATUS_STD_ID)
+            || (can_status_rx_header.DLC != 8u))
+        {
+            can_status_rx_matches = 0u;
+        }
+
+        for (i = 0u; i < 8u; ++i)
+        {
+            if (can_status_rx_data[i] != can_status_tx_data[i])
+            {
+                can_status_rx_matches = 0u;
+            }
+        }
+
+        if (can_status_rx_matches == 0u)
+        {
+            can_status_error_count++;
+        }
+    }
+
+    /* 没到发送时间就返回，让主循环继续处理保护和串口。 */
+    if ((uint32_t)(now_ms - can_status_last_ms) < CAN_STATUS_PERIOD_MS)
+    {
+        return;
+    }
+    can_status_last_ms = now_ms;
+
+    /* 本轮回环只允许一帧待接收，避免覆盖用于比较的发送数据。 */
+    if ((can_status_tx_count != can_status_rx_count)
+        || (HAL_CAN_GetTxMailboxesFreeLevel(&hcan) == 0u))
+    {
+        can_status_error_count++;
+        return;
+    }
+
+    /* 把最新控制结果装进8字节；故障位图按低字节在前存放。 */
+    can_status_tx_data[0] = (uint8_t)bms_controller.machine.state;
+    can_status_tx_data[1] = bms_controller.machine.load_enabled;
+    can_status_tx_data[2] = bms_controller.clear_allowed;
+    can_status_tx_data[3] = can_status_next_sequence;
+    can_status_tx_data[4] = (uint8_t)bms_controller.active_faults;
+    can_status_tx_data[5] = (uint8_t)(bms_controller.active_faults >> 8);
+    can_status_tx_data[6] = (uint8_t)(bms_controller.active_faults >> 16);
+    can_status_tx_data[7] = (uint8_t)(bms_controller.active_faults >> 24);
+
+    tx_header.StdId = CAN_STATUS_STD_ID;
+    tx_header.IDE = CAN_ID_STD;
+    tx_header.RTR = CAN_RTR_DATA;
+    tx_header.DLC = 8u;
+
+    /* HAL把数据放入发送邮箱；收到回环帧后，由后续主循环取出。 */
+    if (HAL_CAN_AddTxMessage(
+            &hcan, &tx_header, can_status_tx_data, &tx_mailbox) != HAL_OK)
+    {
+        can_status_error_count++;
+        return;
+    }
+
+    can_status_tx_count++;
+    can_status_next_sequence = (uint8_t)(can_status_next_sequence + 1u);
+}
 /* USER CODE END 0 */
 
 /**
@@ -314,6 +421,13 @@ int main(void)
     led_last_ms = HAL_GetTick();
     uart_last_ms = led_last_ms;
     bms_last_ms = led_last_ms;
+
+    /* 启动单帧测试结束时已停止CAN，这里重新启动周期通信。 */
+    if (HAL_CAN_Start(&hcan) != HAL_OK)
+    {
+        Error_Handler();
+    }
+    can_status_last_ms = led_last_ms;
 
     /* 第一次启动单字节接收；函数立即返回，不等待电脑发送。 */
     if (HAL_UART_Receive_IT(&huart1, &uart_rx_byte, 1u) != HAL_OK)
@@ -379,6 +493,9 @@ int main(void)
             /* 等状态机完成本轮处理后，再把最终结果显示到灯上。 */
             Bms_UpdateIndicators(&bms_controller);
         }
+
+        /* 控制结果更新后处理CAN；函数内部决定是否到发送时间。 */
+        Bms_CanStatusPoll(now_ms);
 
         /* 采样/控制先执行，随后发送最新状态。 */
         if ((uint32_t)(now_ms - uart_last_ms) >= UART_PERIOD_MS)
