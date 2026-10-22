@@ -51,6 +51,8 @@
 
 /* 本步用这个模拟结果通过自检，不代表已经实现硬件自检。 */
 #define DEMO_SELF_TEST_PASSED  1u
+/* 平均值最多使用最近4次成功采样。 */
+#define ADC_FILTER_WINDOW     4u
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -70,16 +72,19 @@ static uint32_t bms_last_ms = 0u;
 /* 采样快照和控制器都需要在多次循环之间保留。 */
 static BmsSample bms_sample = {0};
 static BmsController bms_controller;
-static char uart_tx_buffer[96];
+static char uart_tx_buffer[160];
+
 /* 单槽命令入口：由Watch或串口中断写入，主循环取走后清空。 */
 static volatile BmsCommand bms_debug_command = BMS_CMD_NONE;
 /* 1：生成新模拟采样；0：保留旧快照，用来验证采样超时。 */
 static volatile uint8_t bms_sim_sampling_enabled = 1u;
+
 /* HAL把收到的一个字节写到这里；接收结束后由回调读取。 */
 static uint8_t uart_rx_byte = 0u;
 /* 中断只提出重启接收的请求，具体恢复放在主循环完成。 */
 static volatile uint8_t uart_rx_restart_required = 0u;
 /* ADC原始读数，以及按3.3V参考估算的实际输入毫伏值。 */
+
 static volatile uint32_t bms_adc_raw = 0u;
 static volatile uint32_t bms_adc_input_mv = 0u;
 /* 电位器位置映射成的模拟单体电压，不是PC0引脚电压。 */
@@ -87,6 +92,17 @@ static volatile int32_t bms_adc_cell0_mv = 0;
 /* 上一次实际读取是否成功；暂停采样时保留上次结果。 */
 static volatile uint8_t bms_adc_read_ok = 0u;
 static volatile uint32_t bms_adc_error_count = 0u;
+/* 保存最近几次原始码，以及计算平均值需要的记录。 */
+static uint32_t bms_adc_filter_window[ADC_FILTER_WINDOW] = {0};
+static uint32_t bms_adc_filter_sum = 0u;
+static uint32_t bms_adc_filter_index = 0u;
+static uint32_t bms_adc_filter_last_ms = 0u;
+static volatile uint32_t bms_adc_filter_count = 0u;
+
+/* 滤波结果用于显示；是否有新有效数据仍看read_ok和时间戳。 */
+static volatile uint32_t bms_adc_filtered_raw = 0u;
+static volatile uint32_t bms_adc_filtered_input_mv = 0u;
+
 /* 模拟温度，单位0.1℃：250表示25.0℃。 */
 static volatile int32_t bms_sim_temperature_dC = 250;
 /* 模拟电流，单位mA：正数表示放电，负数表示充电。 */
@@ -185,6 +201,45 @@ static void Bms_UpdateIndicators(const BmsController *controller)
     HAL_GPIO_WritePin(LED_FAULT_GPIO_Port, LED_FAULT_Pin, fault_level);
 }
 
+/* 只在本次ADC读取成功后调用，返回最近最多4次读数的平均值。 */
+static uint32_t Bms_FilterAdcRaw(uint32_t raw, uint32_t now_ms)
+{
+    /* 首次采样、读取失败后，或间隔已到超时门限时，重新建立窗口。 */
+    if ((bms_adc_filter_count == 0u)
+        || ((uint32_t)(now_ms - bms_adc_filter_last_ms)
+            >= bms_config.voltage_max_age_ms))
+    {
+        bms_adc_filter_sum = 0u;
+        bms_adc_filter_index = 0u;
+        bms_adc_filter_count = 0u;
+    }
+
+    if (bms_adc_filter_count < ADC_FILTER_WINDOW)
+    {
+        /* 刚启动时，只平均已经收到的读数，不把空位置当作0。 */
+        bms_adc_filter_count++;
+    }
+    else
+    {
+        /* 窗口已满：先从总和中减去即将被替换的最旧读数。 */
+        bms_adc_filter_sum -=
+            bms_adc_filter_window[bms_adc_filter_index];
+    }
+
+    bms_adc_filter_window[bms_adc_filter_index] = raw;
+    bms_adc_filter_sum += raw;
+    bms_adc_filter_index++;
+    if (bms_adc_filter_index >= ADC_FILTER_WINDOW)
+    {
+        bms_adc_filter_index = 0u;
+    }
+    bms_adc_filter_last_ms = now_ms;
+
+    /* 加半个除数再整除，让平均值四舍五入到整数ADC码。 */
+    return (bms_adc_filter_sum + bms_adc_filter_count / 2u)
+        / bms_adc_filter_count;
+}
+
 /* 读取一次电位器；成功返回1，失败返回0，旧读数保留。 */
 static uint8_t Bms_ReadPotentiometer(void)
 {
@@ -250,6 +305,12 @@ static void Bms_UpdateDemoSample(BmsSample *sample, uint32_t now_ms)
 
     if (bms_adc_read_ok == 1u)
     {
+        bms_adc_filtered_raw = Bms_FilterAdcRaw(bms_adc_raw, now_ms);
+        bms_adc_filtered_input_mv =
+            (bms_adc_filtered_raw * ADC_REFERENCE_MV + ADC_MAX_CODE / 2u)
+            / ADC_MAX_CODE;
+
+        /* 保护仍使用本次原始读数映射的电压，避免显示滤波延后触发。 */
         sample->cell_mv[0].value = bms_adc_cell0_mv;
         sample->cell_mv[0].timestamp_ms = now_ms;
         sample->cell_mv[0].valid = 1u;
@@ -259,6 +320,9 @@ static void Bms_UpdateDemoSample(BmsSample *sample, uint32_t now_ms)
         /* 失败时标记无效，保留旧值和旧时间，交给保护逻辑处理。 */
         sample->cell_mv[0].valid = 0u;
         bms_adc_error_count++;
+
+        /* 丢弃旧窗口，下次成功采样时从新读数开始计算。 */
+        bms_adc_filter_count = 0u;
     }
 }
 /* 启动阶段发送并接收一帧，核对成功返回1，失败返回0。 */
@@ -543,7 +607,7 @@ int main(void)
             /* 只控制是否生成新采样，下面的保护检查始终执行。 */
             if (bms_sim_sampling_enabled == 1u)
             {
-                Bms_UpdateDemoSample(&bms_sample, now_ms);;
+                Bms_UpdateDemoSample(&bms_sample, now_ms);
             }
 
             /* 取出并清空命令，避免与串口中断发生竞争。 */
@@ -574,12 +638,14 @@ int main(void)
                 uart_tx_buffer,
                 sizeof(uart_tx_buffer),
                 "BMS state=%u, faults=0x%08lX, latched=0x%08lX, "
-                "load=%u, clear=%u\r\n",
+                "load=%u, clear=%u, raw=%lu, avg=%lu\r\n",
                 (unsigned int)bms_controller.machine.state,
                 (unsigned long)bms_controller.active_faults,
                 (unsigned long)bms_controller.machine.latched_faults,
                 (unsigned int)bms_controller.machine.load_enabled,
-                (unsigned int)bms_controller.clear_allowed);
+                (unsigned int)bms_controller.clear_allowed,
+                (unsigned long)bms_adc_raw,
+                (unsigned long)bms_adc_filtered_raw);
 
             if ((length <= 0)
                 || ((size_t)length >= sizeof(uart_tx_buffer)))

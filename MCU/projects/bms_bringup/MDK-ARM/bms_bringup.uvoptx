@@ -151,37 +151,32 @@
         <Ww>
           <count>0</count>
           <WinNumber>1</WinNumber>
-          <ItemText>can_status_tx_count</ItemText>
+          <ItemText>bms_adc_raw</ItemText>
         </Ww>
         <Ww>
           <count>1</count>
           <WinNumber>1</WinNumber>
-          <ItemText>can_status_rx_count</ItemText>
+          <ItemText>bms_adc_input_mv</ItemText>
         </Ww>
         <Ww>
           <count>2</count>
           <WinNumber>1</WinNumber>
-          <ItemText>can_status_error_count</ItemText>
+          <ItemText>bms_adc_cell0_mv</ItemText>
         </Ww>
         <Ww>
           <count>3</count>
           <WinNumber>1</WinNumber>
-          <ItemText>can_status_rx_matches</ItemText>
+          <ItemText>bms_adc_read_ok</ItemText>
         </Ww>
         <Ww>
           <count>4</count>
           <WinNumber>1</WinNumber>
-          <ItemText>can_status_rx_header</ItemText>
+          <ItemText>bms_adc_error_count</ItemText>
         </Ww>
         <Ww>
           <count>5</count>
           <WinNumber>1</WinNumber>
-          <ItemText>can_status_tx_data</ItemText>
-        </Ww>
-        <Ww>
-          <count>6</count>
-          <WinNumber>1</WinNumber>
-          <ItemText>can_status_rx_data</ItemText>
+          <ItemText>bms_sample.cell_mv[0]</ItemText>
         </Ww>
       </WatchWindow1>
       <Tracepoint>
