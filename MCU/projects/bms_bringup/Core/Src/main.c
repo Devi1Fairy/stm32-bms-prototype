@@ -130,12 +130,6 @@ static const BmsControllerConfig bms_config = {
     }
 };
 
-/* 保留回环结果，便于在Keil Watch中检查。 */
-static volatile uint8_t can_loopback_passed = 0u;
-static CAN_RxHeaderTypeDef can_loopback_rx_header = {0};
-static uint8_t can_loopback_rx_data[8] = {0};
-static const uint8_t can_loopback_ok_message[] = "CAN loopback OK\r\n";
-
 /* 上次安排发送状态帧的时间，单位ms。 */
 static uint32_t can_status_last_ms = 0u;
 
@@ -149,8 +143,6 @@ static volatile uint32_t can_status_tx_count = 0u;
 static volatile uint32_t can_status_rx_count = 0u;
 /* 记录软件检查遇到异常的次数，不是CAN硬件错误计数器。 */
 static volatile uint32_t can_status_error_count = 0u;
-/* 1表示最近收到的帧与我们发送的帧一致。 */
-static volatile uint8_t can_status_rx_matches = 0u;
 /* 下一帧要使用的序号，超过255后从0重新开始。 */
 static uint8_t can_status_next_sequence = 0u;
 
@@ -325,19 +317,13 @@ static void Bms_UpdateDemoSample(BmsSample *sample, uint32_t now_ms)
         bms_adc_filter_count = 0u;
     }
 }
-/* 启动阶段发送并接收一帧，核对成功返回1，失败返回0。 */
-static uint8_t Bms_CanLoopbackTest(void)
+
+/* 配置接收过滤器并启动CAN，只在上电初始化时调用一次。 */
+static void Bms_CanStart(void)
 {
     CAN_FilterTypeDef filter = {0};
-    CAN_TxHeaderTypeDef tx_header = {0};
-    const uint8_t tx_data[8] = {
-        0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88
-    };
-    uint32_t tx_mailbox = 0u;
-    uint32_t started_ms;
-    uint32_t i;
 
-    /* 掩码字段初始为0，先允许所有标识符进入FIFO0。 */
+    /* 掩码全为0：先允许所有ID进入FIFO0，方便初期调试。 */
     filter.FilterBank = 0u;
     filter.FilterMode = CAN_FILTERMODE_IDMASK;
     filter.FilterScale = CAN_FILTERSCALE_32BIT;
@@ -347,61 +333,8 @@ static uint8_t Bms_CanLoopbackTest(void)
     if ((HAL_CAN_ConfigFilter(&hcan, &filter) != HAL_OK)
         || (HAL_CAN_Start(&hcan) != HAL_OK))
     {
-        return 0u;
+        Error_Handler();
     }
-
-    /* 标准数据帧：11位标识符，携带8字节测试数据。 */
-    tx_header.StdId = 0x123u;
-    tx_header.IDE = CAN_ID_STD;
-    tx_header.RTR = CAN_RTR_DATA;
-    tx_header.DLC = 8u;
-
-    if (HAL_CAN_AddTxMessage(
-            &hcan, &tx_header, tx_data, &tx_mailbox) != HAL_OK)
-    {
-        return 0u;
-    }
-
-    /* 本步只在启动阶段等待，超时后返回失败。 */
-    started_ms = HAL_GetTick();
-    while (HAL_CAN_GetRxFifoFillLevel(&hcan, CAN_RX_FIFO0) == 0u)
-    {
-        if ((uint32_t)(HAL_GetTick() - started_ms) >= 100u)
-        {
-            return 0u;
-        }
-    }
-
-    if (HAL_CAN_GetRxMessage(
-            &hcan, CAN_RX_FIFO0,
-            &can_loopback_rx_header, can_loopback_rx_data) != HAL_OK)
-    {
-        return 0u;
-    }
-
-    /* 一帧测试完成后停下CAN，随后进入原来的BMS循环。 */
-    if (HAL_CAN_Stop(&hcan) != HAL_OK)
-    {
-        return 0u;
-    }
-
-    if ((can_loopback_rx_header.IDE != CAN_ID_STD)
-        || (can_loopback_rx_header.RTR != CAN_RTR_DATA)
-        || (can_loopback_rx_header.StdId != 0x123u)
-        || (can_loopback_rx_header.DLC != 8u))
-    {
-        return 0u;
-    }
-
-    for (i = 0u; i < 8u; ++i)
-    {
-        if (can_loopback_rx_data[i] != tx_data[i])
-        {
-            return 0u;
-        }
-    }
-
-    return 1u;
 }
 
 /* 每轮主循环调用：先收已有的帧，到时间再发，不等待收发完成。 */
@@ -409,9 +342,8 @@ static void Bms_CanStatusPoll(uint32_t now_ms)
 {
     CAN_TxHeaderTypeDef tx_header = {0};
     uint32_t tx_mailbox = 0u;
-    uint32_t i;
 
-    /* FIFO里有帧才读取；每次调用最多处理一帧。 */
+    /* 普通模式收到的是对端发来的帧，本步只保存，不执行控制命令。 */
     if (HAL_CAN_GetRxFifoFillLevel(&hcan, CAN_RX_FIFO0) > 0u)
     {
         if (HAL_CAN_GetRxMessage(
@@ -423,29 +355,6 @@ static void Bms_CanStatusPoll(uint32_t now_ms)
         }
 
         can_status_rx_count++;
-        can_status_rx_matches = 1u;
-
-        /* 先核对帧头，再逐字节比较本轮发出的数据。 */
-        if ((can_status_rx_header.IDE != CAN_ID_STD)
-            || (can_status_rx_header.RTR != CAN_RTR_DATA)
-            || (can_status_rx_header.StdId != CAN_STATUS_STD_ID)
-            || (can_status_rx_header.DLC != 8u))
-        {
-            can_status_rx_matches = 0u;
-        }
-
-        for (i = 0u; i < 8u; ++i)
-        {
-            if (can_status_rx_data[i] != can_status_tx_data[i])
-            {
-                can_status_rx_matches = 0u;
-            }
-        }
-
-        if (can_status_rx_matches == 0u)
-        {
-            can_status_error_count++;
-        }
     }
 
     /* 没到发送时间就返回，让主循环继续处理保护和串口。 */
@@ -455,9 +364,8 @@ static void Bms_CanStatusPoll(uint32_t now_ms)
     }
     can_status_last_ms = now_ms;
 
-    /* 本轮回环只允许一帧待接收，避免覆盖用于比较的发送数据。 */
-    if ((can_status_tx_count != can_status_rx_count)
-        || (HAL_CAN_GetTxMailboxesFreeLevel(&hcan) == 0u))
+    /* 邮箱没有空位就跳过这一帧，让主循环继续执行保护。 */
+    if (HAL_CAN_GetTxMailboxesFreeLevel(&hcan) == 0u)
     {
         can_status_error_count++;
         return;
@@ -478,7 +386,7 @@ static void Bms_CanStatusPoll(uint32_t now_ms)
     tx_header.RTR = CAN_RTR_DATA;
     tx_header.DLC = 8u;
 
-    /* HAL把数据放入发送邮箱；收到回环帧后，由后续主循环取出。 */
+    /* HAL成功表示提交到发送邮箱，电脑实际收到才验证外部发送。 */
     if (HAL_CAN_AddTxMessage(
             &hcan, &tx_header, can_status_tx_data, &tx_mailbox) != HAL_OK)
     {
@@ -524,43 +432,23 @@ int main(void)
   MX_ADC1_Init();
   MX_CAN_Init();
   /* USER CODE BEGIN 2 */
-    /* 外设已初始化，先做一次ADC内部自校准，再开始采样。 */
+    /* 外设已初始化，先做一次ADC内部自校准。 */
     if (HAL_ADCEx_Calibration_Start(&hadc1) != HAL_OK)
     {
         Error_Handler();
     }
-  
-    /* 此时CubeMX生成的MX_CAN_Init已经执行完毕。 */
-    can_loopback_passed = Bms_CanLoopbackTest();
-    if (can_loopback_passed != 1u)
-    {
-        Error_Handler();
-    }
 
-    if (HAL_UART_Transmit(
-            &huart1,
-            can_loopback_ok_message,
-            (uint16_t)(sizeof(can_loopback_ok_message) - 1u),
-            100u) != HAL_OK)
-    {
-        Error_Handler();
-    }
-  
-  /* 只在启动时初始化一次，循环里不重复清空控制器。 */
+    /* 初始化控制器和指示灯，再启动周期通信。 */
     Bms_ControllerInit(&bms_controller);
     Bms_UpdateIndicators(&bms_controller);
     led_last_ms = HAL_GetTick();
     uart_last_ms = led_last_ms;
     bms_last_ms = led_last_ms;
 
-    /* 启动单帧测试结束时已停止CAN，这里重新启动周期通信。 */
-    if (HAL_CAN_Start(&hcan) != HAL_OK)
-    {
-        Error_Handler();
-    }
+    Bms_CanStart();
     can_status_last_ms = led_last_ms;
 
-    /* 第一次启动单字节接收；函数立即返回，不等待电脑发送。 */
+    /* 串口继续接收S/T/C等指令；本步尚未从CAN执行控制命令。 */
     if (HAL_UART_Receive_IT(&huart1, &uart_rx_byte, 1u) != HAL_OK)
     {
         Error_Handler();
