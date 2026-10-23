@@ -43,6 +43,9 @@
 
 #define CAN_STATUS_PERIOD_MS  1000u
 #define CAN_STATUS_STD_ID     0x301u
+#define CAN_COMMAND_STD_ID  0x201u
+#define CAN_COMMAND_START   0x01u
+#define CAN_COMMAND_STOP    0x02u
 
 #define ADC_MAX_CODE          4095u
 #define ADC_REFERENCE_MV      3300u
@@ -146,6 +149,10 @@ static volatile uint32_t can_status_error_count = 0u;
 /* 下一帧要使用的序号，超过255后从0重新开始。 */
 static uint8_t can_status_next_sequence = 0u;
 
+/* 有效/无效命令格式计数；有效不代表状态机同意执行。 */
+static volatile uint32_t can_command_valid_count = 0u;
+static volatile uint32_t can_command_invalid_count = 0u;
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -169,6 +176,71 @@ static BmsCommand Bms_TakePendingCommand(void)
     __set_PRIMASK(saved_primask);
 
     return command;
+}
+
+/* 串口和CAN都从这里提交请求，状态机仍由主循环统一执行。 */
+static void Bms_PostCommand(BmsCommand command)
+{
+    uint32_t saved_primask;
+
+    if (command == BMS_CMD_NONE)
+    {
+        return;
+    }
+
+    saved_primask = __get_PRIMASK();
+    __disable_irq();
+
+    /* STOP还没被取走时，后来的START或CLEAR不能把它覆盖。 */
+    if ((command == BMS_CMD_STOP)
+        || (bms_debug_command != BMS_CMD_STOP))
+    {
+        bms_debug_command = command;
+    }
+
+    __set_PRIMASK(saved_primask);
+}
+
+/* 只解析本项目的启动/停止命令，不直接改变状态或控制GPIO。 */
+static void Bms_HandleCanCommand(
+    const CAN_RxHeaderTypeDef *header,
+    const uint8_t *data)
+{
+    BmsCommand command;
+
+    /* 其他ID和扩展帧不属于本步协议，直接忽略。 */
+    if ((header->IDE != CAN_ID_STD)
+        || (header->StdId != CAN_COMMAND_STD_ID))
+    {
+        return;
+    }
+
+    /* 命令必须是数据帧，而且恰好携带一个字节。 */
+    if ((header->RTR != CAN_RTR_DATA) || (header->DLC != 1u))
+    {
+        can_command_invalid_count++;
+        return;
+    }
+
+    switch (data[0])
+    {
+        case CAN_COMMAND_START:
+            command = BMS_CMD_START;
+            break;
+
+        case CAN_COMMAND_STOP:
+            command = BMS_CMD_STOP;
+            break;
+
+        default:
+            can_command_invalid_count++;
+            return;
+    }
+
+    Bms_PostCommand(command);
+
+    /* 格式有效不代表允许启动，最终由状态机判断。 */
+    can_command_valid_count++;
 }
 
 /* 根据本轮控制结果更新指示灯；板上LED都是低电平亮。 */
@@ -355,6 +427,8 @@ static void Bms_CanStatusPoll(uint32_t now_ms)
         }
 
         can_status_rx_count++;
+
+        Bms_HandleCanCommand(&can_status_rx_header, can_status_rx_data);
     }
 
     /* 没到发送时间就返回，让主循环继续处理保护和串口。 */
@@ -621,15 +695,15 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
     switch (uart_rx_byte)
     {
         case 'S':
-            bms_debug_command = BMS_CMD_START;
+            Bms_PostCommand(BMS_CMD_START);
             break;
 
         case 'T':
-            bms_debug_command = BMS_CMD_STOP;
+            Bms_PostCommand(BMS_CMD_STOP);
             break;
 
         case 'C':
-            bms_debug_command = BMS_CMD_CLEAR;
+            Bms_PostCommand(BMS_CMD_CLEAR);
             break;
 
         case 'P':
