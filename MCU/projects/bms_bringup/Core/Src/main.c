@@ -46,6 +46,9 @@
 #define CAN_COMMAND_STD_ID  0x201u
 #define CAN_COMMAND_START   0x01u
 #define CAN_COMMAND_STOP    0x02u
+#define CAN_COMMAND_CLEAR       0x03u
+#define CAN_COMMAND_QUERY       0x04u
+#define CAN_MEASUREMENT_STD_ID  0x302u
 
 #define ADC_MAX_CODE          4095u
 #define ADC_REFERENCE_MV      3300u
@@ -135,12 +138,10 @@ static const BmsControllerConfig bms_config = {
 
 /* 上次安排发送状态帧的时间，单位ms。 */
 static uint32_t can_status_last_ms = 0u;
-
 /* 最近一次发送、接收的8字节数据，便于Watch查看。 */
 static uint8_t can_status_tx_data[8] = {0};
 static uint8_t can_status_rx_data[8] = {0};
 static CAN_RxHeaderTypeDef can_status_rx_header = {0};
-
 /* tx记录提交成功次数；rx记录从FIFO取出帧的次数。 */
 static volatile uint32_t can_status_tx_count = 0u;
 static volatile uint32_t can_status_rx_count = 0u;
@@ -148,10 +149,12 @@ static volatile uint32_t can_status_rx_count = 0u;
 static volatile uint32_t can_status_error_count = 0u;
 /* 下一帧要使用的序号，超过255后从0重新开始。 */
 static uint8_t can_status_next_sequence = 0u;
-
 /* 有效/无效命令格式计数；有效不代表状态机同意执行。 */
 static volatile uint32_t can_command_valid_count = 0u;
 static volatile uint32_t can_command_invalid_count = 0u;
+/* 查询到来时置1，两帧报告提交成功后清零。 */
+static uint8_t can_report_requested = 0u;
+static volatile uint32_t can_measurement_tx_count = 0u;
 
 /* USER CODE END PV */
 
@@ -231,6 +234,16 @@ static void Bms_HandleCanCommand(
         case CAN_COMMAND_STOP:
             command = BMS_CMD_STOP;
             break;
+
+        case CAN_COMMAND_CLEAR:
+            command = BMS_CMD_CLEAR;
+            break;
+
+        case CAN_COMMAND_QUERY:
+            /* 查询不覆盖正在等待处理的启动、停止或清除请求。 */
+            can_report_requested = 1u;
+            can_command_valid_count++;
+            return;
 
         default:
             can_command_invalid_count++;
@@ -409,12 +422,98 @@ static void Bms_CanStart(void)
     }
 }
 
+/* 检查原始采样记录，发送报文时不会刷新它的时间戳。 */
+static uint8_t Bms_CanMeasurementFresh(
+    const BmsMeasurement *measurement,
+    uint32_t now_ms,
+    uint32_t max_age_ms)
+{
+    return (measurement->valid == 1u)
+        && (measurement->source >= BMS_SOURCE_SIMULATED)
+        && (measurement->source <= BMS_SOURCE_AFE)
+        && ((uint32_t)(now_ms - measurement->timestamp_ms) < max_age_ms);
+}
+
+/* 上报一节模拟单体电压、温度、电流及数据标志。 */
+static uint8_t Bms_CanSendMeasurements(uint32_t now_ms)
+{
+    CAN_TxHeaderTypeDef header = {0};
+    uint32_t mailbox = 0u;
+    uint8_t data[8] = {0};
+    uint16_t voltage = 0u;
+    uint16_t temperature = 0u;
+    uint16_t current = 0u;
+    uint8_t flags = 0u;
+    uint8_t sources = 0u;
+
+    /* 超时、无效或超出报文范围时，保持占位0，不设置有效位。 */
+    if (Bms_CanMeasurementFresh(
+            &bms_sample.cell_mv[0], now_ms,
+            bms_config.voltage_max_age_ms)
+        && (bms_sample.cell_mv[0].value >= 0)
+        && (bms_sample.cell_mv[0].value <= 65535))
+    {
+        voltage = (uint16_t)bms_sample.cell_mv[0].value;
+        flags |= 0x01u;
+        sources |= (uint8_t)bms_sample.cell_mv[0].source;
+    }
+
+    if (Bms_CanMeasurementFresh(
+            &bms_sample.temperature_dC, now_ms,
+            bms_config.temperature_max_age_ms)
+        && (bms_sample.temperature_dC.value >= -32768)
+        && (bms_sample.temperature_dC.value <= 32767))
+    {
+        /* 负数转换为16位无符号数后，按补码字节发送。 */
+        temperature = (uint16_t)bms_sample.temperature_dC.value;
+        flags |= 0x02u;
+        sources |= (uint8_t)(
+            (uint8_t)bms_sample.temperature_dC.source << 2);
+    }
+
+    if (Bms_CanMeasurementFresh(
+            &bms_sample.current_ma, now_ms,
+            bms_config.current_max_age_ms)
+        && (bms_sample.current_ma.value >= -32768)
+        && (bms_sample.current_ma.value <= 32767))
+    {
+        current = (uint16_t)bms_sample.current_ma.value;
+        flags |= 0x04u;
+        sources |= (uint8_t)(
+            (uint8_t)bms_sample.current_ma.source << 4);
+    }
+
+    /* 每个16位数均按低字节在前发送。 */
+    data[0] = (uint8_t)voltage;
+    data[1] = (uint8_t)(voltage >> 8);
+    data[2] = (uint8_t)temperature;
+    data[3] = (uint8_t)(temperature >> 8);
+    data[4] = (uint8_t)current;
+    data[5] = (uint8_t)(current >> 8);
+    data[6] = flags;
+    data[7] = sources;
+
+    header.StdId = CAN_MEASUREMENT_STD_ID;
+    header.IDE = CAN_ID_STD;
+    header.RTR = CAN_RTR_DATA;
+    header.DLC = 8u;
+
+    /* HAL会在调用内把8字节复制到硬件邮箱。 */
+    if (HAL_CAN_AddTxMessage(&hcan, &header, data, &mailbox) != HAL_OK)
+    {
+        return 0u;
+    }
+
+    can_measurement_tx_count++;
+    return 1u;
+}
+
 /* 每轮主循环调用：先收已有的帧，到时间再发，不等待收发完成。 */
 static void Bms_CanStatusPoll(uint32_t now_ms)
 {
     CAN_TxHeaderTypeDef tx_header = {0};
     uint32_t tx_mailbox = 0u;
-
+    uint8_t periodic_due;
     /* 普通模式收到的是对端发来的帧，本步只保存，不执行控制命令。 */
     if (HAL_CAN_GetRxFifoFillLevel(&hcan, CAN_RX_FIFO0) > 0u)
     {
@@ -431,15 +530,22 @@ static void Bms_CanStatusPoll(uint32_t now_ms)
         Bms_HandleCanCommand(&can_status_rx_header, can_status_rx_data);
     }
 
-    /* 没到发送时间就返回，让主循环继续处理保护和串口。 */
-    if ((uint32_t)(now_ms - can_status_last_ms) < CAN_STATUS_PERIOD_MS)
+    periodic_due = (uint8_t)(
+        (uint32_t)(now_ms - can_status_last_ms) >= CAN_STATUS_PERIOD_MS);
+
+    if ((periodic_due == 0u) && (can_report_requested == 0u))
     {
         return;
     }
-    can_status_last_ms = now_ms;
+
+    /* 查询不移动原来的周期基准。 */
+    if (periodic_due != 0u)
+    {
+        can_status_last_ms = now_ms;
+    }
 
     /* 邮箱没有空位就跳过这一帧，让主循环继续执行保护。 */
-    if (HAL_CAN_GetTxMailboxesFreeLevel(&hcan) == 0u)
+    if (HAL_CAN_GetTxMailboxesFreeLevel(&hcan) < 2u)
     {
         can_status_error_count++;
         return;
@@ -470,6 +576,15 @@ static void Bms_CanStatusPoll(uint32_t now_ms)
 
     can_status_tx_count++;
     can_status_next_sequence = (uint8_t)(can_status_next_sequence + 1u);
+
+    if (Bms_CanSendMeasurements(now_ms) == 0u)
+    {
+        can_status_error_count++;
+        return;
+    }
+
+    /* 两帧都提交成功后，清除本次查询请求。 */
+    can_report_requested = 0u;
 }
 /* USER CODE END 0 */
 
