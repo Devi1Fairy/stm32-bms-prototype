@@ -52,6 +52,11 @@ void MX_GPIO_Init(void)
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOB, LED_RUN_Pin|LED_FAULT_Pin|LED_STATUS_Pin, GPIO_PIN_SET);
 
+  /*Configure GPIO pin : PC1 */
+  GPIO_InitStruct.Pin = GPIO_PIN_1;
+  GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
+  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+
   /*Configure GPIO pins : LED_RUN_Pin LED_FAULT_Pin LED_STATUS_Pin */
   GPIO_InitStruct.Pin = LED_RUN_Pin|LED_FAULT_Pin|LED_STATUS_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;

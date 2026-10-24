@@ -78,7 +78,7 @@ static uint32_t bms_last_ms = 0u;
 /* 采样快照和控制器都需要在多次循环之间保留。 */
 static BmsSample bms_sample = {0};
 static BmsController bms_controller;
-static char uart_tx_buffer[160];
+static char uart_tx_buffer[256];
 
 /* 单槽命令入口：由Watch或串口中断写入，主循环取走后清空。 */
 static volatile BmsCommand bms_debug_command = BMS_CMD_NONE;
@@ -155,6 +155,12 @@ static volatile uint32_t can_command_invalid_count = 0u;
 /* 查询到来时置1，两帧报告提交成功后清零。 */
 static uint8_t can_report_requested = 0u;
 static volatile uint32_t can_measurement_tx_count = 0u;
+
+/* NTC模块AO的采样结果；这里暂不换算成摄氏温度。 */
+static volatile uint32_t bms_ntc_raw = 0u;
+static volatile uint32_t bms_ntc_input_mv = 0u;
+static volatile uint8_t bms_ntc_read_ok = 0u;
+static volatile uint32_t bms_ntc_error_count = 0u;
 
 /* USER CODE END PV */
 
@@ -317,17 +323,32 @@ static uint32_t Bms_FilterAdcRaw(uint32_t raw, uint32_t now_ms)
         / bms_adc_filter_count;
 }
 
-/* 读取一次电位器；成功返回1，失败返回0，旧读数保留。 */
-static uint8_t Bms_ReadPotentiometer(void)
+/* 两路共用ADC1：每次先选通道，再启动一次转换。 */
+static uint8_t Bms_ReadAdcChannel(uint32_t channel, uint32_t *raw_out)
 {
+    ADC_ChannelConfTypeDef config = {0};
     uint32_t raw;
 
-    if (HAL_ADC_Start(&hadc1) != HAL_OK)
+    if (raw_out == NULL)
     {
         return 0u;
     }
 
-    /* 等待本次转换，等待参数为2ms，不使用无限等待。 */
+    config.Channel = channel;
+    config.Rank = ADC_REGULAR_RANK_1;
+    config.SamplingTime = ADC_SAMPLETIME_239CYCLES_5;
+    if (HAL_ADC_ConfigChannel(&hadc1, &config) != HAL_OK)
+    {
+        return 0u;
+    }
+
+    if (HAL_ADC_Start(&hadc1) != HAL_OK)
+    {
+        (void)HAL_ADC_Stop(&hadc1);
+        return 0u;
+    }
+
+    /* 等待参数为2ms；失败也尝试停止ADC，不使用无限等待。 */
     if (HAL_ADC_PollForConversion(&hadc1, 2u) != HAL_OK)
     {
         (void)HAL_ADC_Stop(&hadc1);
@@ -340,15 +361,48 @@ static uint8_t Bms_ReadPotentiometer(void)
         return 0u;
     }
 
+    *raw_out = raw;
+    return 1u;
+}
+
+/* PC0仍读电位器，保持原来的模拟单体电压映射。 */
+static uint8_t Bms_ReadPotentiometer(void)
+{
+    uint32_t raw;
+
+    if (Bms_ReadAdcChannel(ADC_CHANNEL_10, &raw) == 0u)
+    {
+        return 0u;
+    }
+
     bms_adc_raw = raw;
-    /* 加半个除数再整除，实现整数四舍五入。 */
     bms_adc_input_mv =
         (raw * ADC_REFERENCE_MV + ADC_MAX_CODE / 2u) / ADC_MAX_CODE;
-
-    /* 0～4095映射为2800～4400mV，方便旋钮触发欠压和过压。 */
     bms_adc_cell0_mv = (int32_t)(
         DEMO_CELL0_MIN_MV
         + (raw * DEMO_CELL0_SPAN_MV + ADC_MAX_CODE / 2u) / ADC_MAX_CODE);
+    return 1u;
+}
+
+/* PC1读取NTC模块AO，只报告原始码和估算毫伏值。 */
+static uint8_t Bms_ReadNtcVoltage(void)
+{
+    uint32_t raw;
+
+    if (Bms_ReadAdcChannel(ADC_CHANNEL_11, &raw) == 0u)
+    {
+        return 0u;
+    }
+
+    bms_ntc_raw = raw;
+    bms_ntc_input_mv =
+        (raw * ADC_REFERENCE_MV + ADC_MAX_CODE / 2u) / ADC_MAX_CODE;
+
+    /* 电源轨附近暂按输入异常处理；不能据此确诊某一种断线。 */
+    if ((raw <= 10u) || (raw >= ADC_MAX_CODE - 10u))
+    {
+        return 0u;
+    }
 
     return 1u;
 }
@@ -376,6 +430,12 @@ static void Bms_UpdateDemoSample(BmsSample *sample, uint32_t now_ms)
     sample->temperature_dC.timestamp_ms = now_ms;
     sample->temperature_dC.valid = 1u;
     sample->temperature_dC.source = BMS_SOURCE_SIMULATED;
+    /* 先采集AO电压，温度字段暂时保留原来的SIMULATED来源。 */
+    bms_ntc_read_ok = Bms_ReadNtcVoltage();
+    if (bms_ntc_read_ok == 0u)
+    {
+        bms_ntc_error_count++;
+    }
 
     sample->cell_mv[0].source = BMS_SOURCE_ADC;
     bms_adc_read_ok = Bms_ReadPotentiometer();
@@ -715,15 +775,19 @@ int main(void)
                 uart_tx_buffer,
                 sizeof(uart_tx_buffer),
                 "BMS state=%u, faults=0x%08lX, latched=0x%08lX, "
-                "load=%u, clear=%u, raw=%lu, avg=%lu\r\n",
+                "load=%u, clear=%u, raw=%lu, avg=%lu, "
+                "ntc_raw=%lu, ntc_mv=%lu, ntc_ok=%u, temp_src=%u\r\n",
                 (unsigned int)bms_controller.machine.state,
                 (unsigned long)bms_controller.active_faults,
                 (unsigned long)bms_controller.machine.latched_faults,
                 (unsigned int)bms_controller.machine.load_enabled,
                 (unsigned int)bms_controller.clear_allowed,
                 (unsigned long)bms_adc_raw,
-                (unsigned long)bms_adc_filtered_raw);
-
+                (unsigned long)bms_adc_filtered_raw,
+                (unsigned long)bms_ntc_raw,
+                (unsigned long)bms_ntc_input_mv,
+                (unsigned int)bms_ntc_read_ok,
+                (unsigned int)bms_sample.temperature_dC.source);
             if ((length <= 0)
                 || ((size_t)length >= sizeof(uart_tx_buffer)))
             {
