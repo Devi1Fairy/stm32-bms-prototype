@@ -28,6 +28,7 @@
 #include "bms_types.h"
 #include "bms_controller.h"
 #include <stdio.h>
+#include <math.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -59,6 +60,15 @@
 #define DEMO_SELF_TEST_PASSED  1u
 /* 平均值最多使用最近4次成功采样。 */
 #define ADC_FILTER_WINDOW     4u
+
+/* 以下是演示用暂定模型，NTC参数未经厂家确认或标定。 */
+#define NTC_PULLUP_OHM         10000.0f
+#define NTC_R25_OHM            10000.0f
+#define NTC_BETA_K              3950.0f
+
+/* 单位0.1℃；手温测试时临时改为280/260，测试后恢复。 */
+#define DEMO_OVER_TEMP_DC       600
+#define DEMO_RECOVER_TEMP_DC    550
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -109,15 +119,15 @@ static volatile uint32_t bms_adc_filter_count = 0u;
 static volatile uint32_t bms_adc_filtered_raw = 0u;
 static volatile uint32_t bms_adc_filtered_input_mv = 0u;
 
-/* 模拟温度，单位0.1℃：250表示25.0℃。 */
-static volatile int32_t bms_sim_temperature_dC = 250;
+/* 未标定估算温度，单位0.1℃；采样失败时保留旧值。 */
+static volatile int32_t bms_ntc_temp_est_dC = 0;
 /* 模拟电流，单位mA：正数表示放电，负数表示充电。 */
 static volatile int32_t bms_sim_current_ma = 0;
 /* 仅用于软件演示，不能直接作为真实电池的保护参数。 */
 static const BmsControllerConfig bms_config = {
     .uv_threshold_mv = 3000,
     .ov_threshold_mv = 4200,
-    .over_temp_dC = 600,          /* 60.0℃ */
+    .over_temp_dC = DEMO_OVER_TEMP_DC,          /* 60.0℃ */
     .discharge_limit_ma = 1000,
     .charge_limit_ma = 500,
     .voltage_max_age_ms = 500u,
@@ -126,7 +136,7 @@ static const BmsControllerConfig bms_config = {
     .recovery = {
         .cell_min_mv = 3200,
         .cell_max_mv = 4100,
-        .max_temperature_dC = 550,
+        .max_temperature_dC = DEMO_RECOVER_TEMP_DC,
         .discharge_limit_ma = 800,
         .charge_limit_ma = 300,
         .voltage_max_age_ms = 500u,
@@ -407,11 +417,58 @@ static uint8_t Bms_ReadNtcVoltage(void)
     return 1u;
 }
 
-/* 第一节由ADC读取电位器，其余电压、电流和温度仍由软件模拟。 */
+/* 将AO原始码换算为估算温度；仅适用于暂定的NTC下臂模型。 */
+static uint8_t Bms_NtcRawToEstimatedTemperature(
+    uint32_t raw, int32_t *temperature_dC)
+{
+    float resistance_ohm;
+    float inverse_kelvin;
+    float temperature_c;
+    float scaled;
+
+    if (temperature_dC == NULL)
+    {
+        return 0u;
+    }
+
+    /* 两轨附近不换算，避免除零、log(0)和明显异常输入。 */
+    if ((raw <= 10u) || (raw >= ADC_MAX_CODE - 10u))
+    {
+        return 0u;
+    }
+
+    resistance_ohm =
+        NTC_PULLUP_OHM * (float)raw / (float)(ADC_MAX_CODE - raw);
+
+    /* Beta公式使用开尔文和自然对数；298.15K对应25℃。 */
+    inverse_kelvin =
+        1.0f / 298.15f + logf(resistance_ohm / NTC_R25_OHM) / NTC_BETA_K;
+    if (!(inverse_kelvin > 0.0f))
+    {
+        return 0u;
+    }
+
+    temperature_c = 1.0f / inverse_kelvin - 273.15f;
+
+    /* 软件只接受估算的-20～100℃；这个判断也会拒绝NaN。 */
+    if (!(temperature_c >= -20.0f && temperature_c <= 100.0f))
+    {
+        return 0u;
+    }
+
+    scaled = temperature_c * 10.0f;
+    /* 正负温度都四舍五入到0.1℃，然后保存为整数。 */
+    *temperature_dC =
+        (int32_t)(scaled >= 0.0f ? scaled + 0.5f : scaled - 0.5f);
+    return 1u;
+}
+
+/* 第一节电压由电位器模拟，温度由NTC估算，其余电压和电流仍模拟。 */
 static void Bms_UpdateDemoSample(BmsSample *sample, uint32_t now_ms)
 {
     uint32_t i;
-
+    int32_t temperature_est_dC = 0;
+    
     /* 从下标1开始，只生成第2、3节的固定模拟电压。 */
     for (i = 1u; i < BMS_CELL_COUNT; ++i)
     {
@@ -426,14 +483,22 @@ static void Bms_UpdateDemoSample(BmsSample *sample, uint32_t now_ms)
     sample->current_ma.valid = 1u;
     sample->current_ma.source = BMS_SOURCE_SIMULATED;
 
-    sample->temperature_dC.value = bms_sim_temperature_dC;
-    sample->temperature_dC.timestamp_ms = now_ms;
-    sample->temperature_dC.valid = 1u;
-    sample->temperature_dC.source = BMS_SOURCE_SIMULATED;
-    /* 先采集AO电压，温度字段暂时保留原来的SIMULATED来源。 */
+    sample->temperature_dC.source = BMS_SOURCE_ADC;
     bms_ntc_read_ok = Bms_ReadNtcVoltage();
-    if (bms_ntc_read_ok == 0u)
+    if ((bms_ntc_read_ok == 1u)
+        && (Bms_NtcRawToEstimatedTemperature(
+                bms_ntc_raw, &temperature_est_dC) == 1u))
     {
+        bms_ntc_temp_est_dC = temperature_est_dC;
+        sample->temperature_dC.value = temperature_est_dC;
+        sample->temperature_dC.timestamp_ms = now_ms;
+        sample->temperature_dC.valid = 1u;
+    }
+    else
+    {
+        /* 失败不刷新旧值和时间戳，保护模块会看到valid=0。 */
+        bms_ntc_read_ok = 0u;
+        sample->temperature_dC.valid = 0u;
         bms_ntc_error_count++;
     }
 
@@ -776,7 +841,8 @@ int main(void)
                 sizeof(uart_tx_buffer),
                 "BMS state=%u, faults=0x%08lX, latched=0x%08lX, "
                 "load=%u, clear=%u, raw=%lu, avg=%lu, "
-                "ntc_raw=%lu, ntc_mv=%lu, ntc_ok=%u, temp_src=%u\r\n",
+                "ntc_raw=%lu, ntc_mv=%lu, temp_est_dC=%ld, "
+                "tv=%u, tlim=%ld, temp_src=%u\r\n",
                 (unsigned int)bms_controller.machine.state,
                 (unsigned long)bms_controller.active_faults,
                 (unsigned long)bms_controller.machine.latched_faults,
@@ -786,7 +852,9 @@ int main(void)
                 (unsigned long)bms_adc_filtered_raw,
                 (unsigned long)bms_ntc_raw,
                 (unsigned long)bms_ntc_input_mv,
-                (unsigned int)bms_ntc_read_ok,
+                (long)bms_sample.temperature_dC.value,
+                (unsigned int)bms_sample.temperature_dC.valid,
+                (long)bms_config.over_temp_dC,
                 (unsigned int)bms_sample.temperature_dC.source);
             if ((length <= 0)
                 || ((size_t)length >= sizeof(uart_tx_buffer)))
