@@ -53,7 +53,9 @@ extern "C" {
 void Error_Handler(void);
 
 /* USER CODE BEGIN EFP */
-
+/* 两个任务分别调用，函数会一直运行。 */
+void Bms_RunTask(void);
+void Bms_RunHeartbeatTask(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/

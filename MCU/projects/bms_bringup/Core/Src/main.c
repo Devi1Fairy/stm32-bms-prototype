@@ -23,7 +23,8 @@
 #include "can.h"
 #include "usart.h"
 #include "gpio.h"
-
+#include "FreeRTOS.h"
+#include "task.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "bms_types.h"
@@ -81,8 +82,15 @@
 
 /* USER CODE BEGIN PV */
 
+/* 只用于调试观察，不参与保护判断。 */
+static volatile uint32_t bms_rtos_loop_count = 0u;
+static volatile uint32_t bms_rtos_led_count = 0u;
+
+static volatile uint32_t bms_rtos_app_stack_free_words = 0u;
+static volatile uint32_t bms_rtos_led_stack_free_words = 0u;
+static volatile uint32_t bms_rtos_heap_free_bytes = 0u;
+
 /* 三个动作分别记录上次执行时间。 */
-static uint32_t led_last_ms = 0u;
 static uint32_t uart_last_ms = 0u;
 static uint32_t bms_last_ms = 0u;
 
@@ -713,6 +721,152 @@ static void Bms_CanStatusPoll(uint32_t now_ms)
     /* 两帧都提交成功后，清除本次查询请求。 */
     can_report_requested = 0u;
 }
+
+/* 业务任务：集中处理采样、保护、CAN和串口。 */
+void Bms_RunTask(void)
+{
+    uint32_t now_ms;
+
+    /* ADC只需要在开始工作前校准一次。 */
+    if (HAL_ADCEx_Calibration_Start(&hadc1) != HAL_OK)
+    {
+        Error_Handler();
+    }
+
+    Bms_ControllerInit(&bms_controller);
+    Bms_UpdateIndicators(&bms_controller);
+
+    now_ms = HAL_GetTick();
+    uart_last_ms = now_ms;
+    bms_last_ms = now_ms;
+    can_status_last_ms = now_ms;
+
+    Bms_CanStart();
+
+    if (HAL_UART_Receive_IT(&huart1, &uart_rx_byte, 1u) != HAL_OK)
+    {
+        Error_Handler();
+    }
+
+    for (;;)
+    {
+        now_ms = HAL_GetTick();
+        bms_rtos_loop_count++;
+
+        /* 接收异常时重新启动，不在中断里执行恢复过程。 */
+        if (uart_rx_restart_required != 0u)
+        {
+            uart_rx_restart_required = 0u;
+
+            if ((HAL_UART_AbortReceive(&huart1) != HAL_OK)
+                || (HAL_UART_Receive_IT(
+                        &huart1, &uart_rx_byte, 1u) != HAL_OK))
+            {
+                uart_rx_restart_required = 1u;
+            }
+        }
+
+        /* 暂停采样时，仍按原周期检查保护和处理命令。 */
+        if ((uint32_t)(now_ms - bms_last_ms) >= BMS_PERIOD_MS)
+        {
+            BmsCommand command;
+
+            bms_last_ms = now_ms;
+
+            if (bms_sim_sampling_enabled == 1u)
+            {
+                Bms_UpdateDemoSample(&bms_sample, now_ms);
+            }
+
+            command = Bms_TakePendingCommand();
+
+            Bms_ControllerStep(
+                &bms_controller,
+                &bms_sample,
+                &bms_config,
+                command,
+                DEMO_SELF_TEST_PASSED,
+                now_ms);
+
+            Bms_UpdateIndicators(&bms_controller);
+        }
+
+        Bms_CanStatusPoll(now_ms);
+
+        /* 保持原来的串口日志内容和发送周期。 */
+        if ((uint32_t)(now_ms - uart_last_ms) >= UART_PERIOD_MS)
+        {
+            int length;
+
+            uart_last_ms = now_ms;
+
+            length = snprintf(
+                uart_tx_buffer,
+                sizeof(uart_tx_buffer),
+                "BMS state=%u, faults=0x%08lX, latched=0x%08lX, "
+                "load=%u, clear=%u, raw=%lu, avg=%lu, "
+                "ntc_raw=%lu, ntc_mv=%lu, temp_est_dC=%ld, "
+                "tv=%u, tlim=%ld, temp_src=%u\r\n",
+                (unsigned int)bms_controller.machine.state,
+                (unsigned long)bms_controller.active_faults,
+                (unsigned long)bms_controller.machine.latched_faults,
+                (unsigned int)bms_controller.machine.load_enabled,
+                (unsigned int)bms_controller.clear_allowed,
+                (unsigned long)bms_adc_raw,
+                (unsigned long)bms_adc_filtered_raw,
+                (unsigned long)bms_ntc_raw,
+                (unsigned long)bms_ntc_input_mv,
+                (long)bms_sample.temperature_dC.value,
+                (unsigned int)bms_sample.temperature_dC.valid,
+                (long)bms_config.over_temp_dC,
+                (unsigned int)bms_sample.temperature_dC.source);
+
+            if ((length <= 0)
+                || ((size_t)length >= sizeof(uart_tx_buffer)))
+            {
+                Error_Handler();
+            }
+
+            if (HAL_UART_Transmit(
+                    &huart1,
+                    (const uint8_t *)uart_tx_buffer,
+                    (uint16_t)length,
+                    100u) != HAL_OK)
+            {
+                Error_Handler();
+            }
+
+            /* 记录任务栈的历史最小余量和当前堆余量。 */
+            bms_rtos_app_stack_free_words =
+                (uint32_t)uxTaskGetStackHighWaterMark(NULL);
+
+            bms_rtos_heap_free_bytes =
+                (uint32_t)xPortGetFreeHeapSize();
+        }
+
+        /* 暂时阻塞业务任务，让其它就绪任务获得运行机会。 */
+        osDelay(1u);
+    }
+}
+
+/* 心跳任务只负责D3，不读写BMS控制器和采样数据。 */
+void Bms_RunHeartbeatTask(void)
+{
+    TickType_t last_wake = xTaskGetTickCount();
+
+    for (;;)
+    {
+        /* 根据上次计划时间安排下一次翻转。 */
+        vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(LED_PERIOD_MS));
+
+        HAL_GPIO_TogglePin(LED_STATUS_GPIO_Port, LED_STATUS_Pin);
+        bms_rtos_led_count++;
+
+        bms_rtos_led_stack_free_words =
+            (uint32_t)uxTaskGetStackHighWaterMark(NULL);
+    }
+}
+
 /* USER CODE END 0 */
 
 /**
@@ -748,27 +902,7 @@ int main(void)
   MX_ADC1_Init();
   MX_CAN_Init();
   /* USER CODE BEGIN 2 */
-    /* 外设已初始化，先做一次ADC内部自校准。 */
-    if (HAL_ADCEx_Calibration_Start(&hadc1) != HAL_OK)
-    {
-        Error_Handler();
-    }
 
-    /* 初始化控制器和指示灯，再启动周期通信。 */
-    Bms_ControllerInit(&bms_controller);
-    Bms_UpdateIndicators(&bms_controller);
-    led_last_ms = HAL_GetTick();
-    uart_last_ms = led_last_ms;
-    bms_last_ms = led_last_ms;
-
-    Bms_CanStart();
-    can_status_last_ms = led_last_ms;
-
-    /* 串口继续接收S/T/C等指令；本步尚未从CAN执行控制命令。 */
-    if (HAL_UART_Receive_IT(&huart1, &uart_rx_byte, 1u) != HAL_OK)
-    {
-        Error_Handler();
-    }
   /* USER CODE END 2 */
 
   /* Call init function for freertos objects (in cmsis_os2.c) */
@@ -786,101 +920,7 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-        uint32_t now_ms = HAL_GetTick();
-
-        /* UART异常或接收续接失败时重启接收；失败则下一轮再试。 */
-        if (uart_rx_restart_required != 0u)
-        {
-            /* 先清请求；之后若又产生新请求，仍能保留下来。 */
-            uart_rx_restart_required = 0u;
-
-            if ((HAL_UART_AbortReceive(&huart1) != HAL_OK)
-                || (HAL_UART_Receive_IT(
-                        &huart1, &uart_rx_byte, 1u) != HAL_OK))
-            {
-                uart_rx_restart_required = 1u;
-            }
-        }
-
-        /* D3继续作为心跳灯，不表示负载已经打开。 */
-        if ((uint32_t)(now_ms - led_last_ms) >= LED_PERIOD_MS)
-        {
-            led_last_ms = now_ms;
-            HAL_GPIO_TogglePin(LED_STATUS_GPIO_Port, LED_STATUS_Pin);
-        }
-
-        //* 每100毫秒执行控制；暂停采样时，保护检查仍然继续。 */
-        if ((uint32_t)(now_ms - bms_last_ms) >= BMS_PERIOD_MS)
-        {
-            BmsCommand command;
-
-            bms_last_ms = now_ms;
-
-            /* 只控制是否生成新采样，下面的保护检查始终执行。 */
-            if (bms_sim_sampling_enabled == 1u)
-            {
-                Bms_UpdateDemoSample(&bms_sample, now_ms);
-            }
-
-            /* 取出并清空命令，避免与串口中断发生竞争。 */
-            command = Bms_TakePendingCommand();
-
-            Bms_ControllerStep(
-                &bms_controller,
-                &bms_sample,
-                &bms_config,
-                command,
-                DEMO_SELF_TEST_PASSED,
-                now_ms);
-
-            /* 等状态机完成本轮处理后，再把最终结果显示到灯上。 */
-            Bms_UpdateIndicators(&bms_controller);
-        }
-
-        /* 控制结果更新后处理CAN；函数内部决定是否到发送时间。 */
-        Bms_CanStatusPoll(now_ms);
-
-        /* 采样/控制先执行，随后发送最新状态。 */
-        if ((uint32_t)(now_ms - uart_last_ms) >= UART_PERIOD_MS)
-        {
-            int length;
-
-            uart_last_ms = now_ms;
-            length = snprintf(
-                uart_tx_buffer,
-                sizeof(uart_tx_buffer),
-                "BMS state=%u, faults=0x%08lX, latched=0x%08lX, "
-                "load=%u, clear=%u, raw=%lu, avg=%lu, "
-                "ntc_raw=%lu, ntc_mv=%lu, temp_est_dC=%ld, "
-                "tv=%u, tlim=%ld, temp_src=%u\r\n",
-                (unsigned int)bms_controller.machine.state,
-                (unsigned long)bms_controller.active_faults,
-                (unsigned long)bms_controller.machine.latched_faults,
-                (unsigned int)bms_controller.machine.load_enabled,
-                (unsigned int)bms_controller.clear_allowed,
-                (unsigned long)bms_adc_raw,
-                (unsigned long)bms_adc_filtered_raw,
-                (unsigned long)bms_ntc_raw,
-                (unsigned long)bms_ntc_input_mv,
-                (long)bms_sample.temperature_dC.value,
-                (unsigned int)bms_sample.temperature_dC.valid,
-                (long)bms_config.over_temp_dC,
-                (unsigned int)bms_sample.temperature_dC.source);
-            if ((length <= 0)
-                || ((size_t)length >= sizeof(uart_tx_buffer)))
-            {
-                Error_Handler();
-            }
-
-            if (HAL_UART_Transmit(
-                    &huart1,
-                    (const uint8_t *)uart_tx_buffer,
-                    (uint16_t)length,
-                    100u) != HAL_OK)
-            {
-                Error_Handler();
-            }
-        }
+    Error_Handler();
     }
   /* USER CODE END 3 */
 }
