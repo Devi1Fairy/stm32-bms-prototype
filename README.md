@@ -6,9 +6,9 @@
 
 ## 当前推进点
 
-下一增量：两任务版本已提交33c1d2e，按[命令队列增量](docs/开发步骤.md#freertos-command-queue-increment-20261026)继续；随后验证MOS、INA226并固定演示/简历。队列候选编译和电脑桩检查通过，项目源码尚待用户填写。
+当前增量：命令队列已接入并提交948c52d，LOAD_EN已改PB10且空载电平切换正常，21:03:30完整构建0错误0警告。已确认MOS最新5 V/3.86 V输出读数是在负载拆除时测得，不能据此判模块坏；当前按[MOS独立台架步骤](docs/开发步骤.md#jobfair-load-output-20261026)把实测98.9 Ω负载接回，重新做带载验收。PA8异常根因未确定，真实负载通断及INA226尚未验收，电流仍模拟。
 
-最新推进（2026-10-26）：[业务任务与独立心跳](docs/开发步骤.md#freertos-business-migration-20261026)已由用户实现，defaultTask为Normal/1024 words，ledTask为BelowNormal/128 words。15:20:38完整构建日志0错误0警告，用户反馈本轮验证全部成功；Watch截图记录业务栈历史余量962 words、心跳104 words、当前RTOS堆空闲10944字节。见[测试实值](docs/测试记录.md#freertos-board-results-20261026)。当前仍用单槽命令，队列、MOS及INA226尚未接入。
+FreeRTOS里程碑（2026-10-26）：[业务任务与独立心跳](docs/开发步骤.md#freertos-business-migration-20261026)已通过，defaultTask为Normal/1024 words，ledTask为BelowNormal/128 words。15:20:38构建0错误0警告，用户反馈该轮全部成功；当时Watch记录业务栈962 words、心跳104 words、堆空闲10944字节，见[测试实值](docs/测试记录.md#freertos-board-results-20261026)。其后已加入命令队列，后续堆余量应重新观察；MOS及INA226尚待接入。
 
 当日范围：基线e525345包含NTC未标定估算与保护，今天10组纯C回归全部通过，随后已完成FreeRTOS两任务迁移。明早招聘会，接下来仍需[PA8/MOS微小负载通断](docs/开发步骤.md#jobfair-load-output-20261026)、[INA226硬件I²C电流实采](docs/开发步骤.md#ina226-i2c-20261026)及回归/录像/简历。GPIO和I²C候选检查通过，真实功率和电流代码尚未写入，当前电流仍模拟。MOS/INA226/电源已到，实物分流电阻印字待核对、功率电阻可能今晚到。
 

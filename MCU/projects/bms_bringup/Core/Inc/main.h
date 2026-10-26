@@ -63,6 +63,8 @@ void Bms_RunHeartbeatTask(void);
 #define LED_RUN_GPIO_Port GPIOB
 #define LED_FAULT_Pin GPIO_PIN_1
 #define LED_FAULT_GPIO_Port GPIOB
+#define LOAD_EN_Pin GPIO_PIN_10
+#define LOAD_EN_GPIO_Port GPIOB
 #define LED_STATUS_Pin GPIO_PIN_5
 #define LED_STATUS_GPIO_Port GPIOB
 

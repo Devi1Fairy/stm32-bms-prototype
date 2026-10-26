@@ -23,8 +23,7 @@
 #include "can.h"
 #include "usart.h"
 #include "gpio.h"
-#include "FreeRTOS.h"
-#include "task.h"
+
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "bms_types.h"
@@ -32,6 +31,8 @@
 #include <stdio.h>
 #include <math.h>
 #include "queue.h"
+#include "FreeRTOS.h"
+#include "task.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -199,6 +200,7 @@ void MX_FREERTOS_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+
 /* 记录入队失败，并请求停止；这里只短暂保护几个内存操作。 */
 static void Bms_RecordCommandDrop(void)
 {
@@ -337,26 +339,34 @@ static void Bms_HandleCanCommand(
     can_command_valid_count++;
 }
 
-/* 根据本轮控制结果更新指示灯；板上LED都是低电平亮。 */
+/* 按控制器最终结果更新负载和指示灯。 */
 static void Bms_UpdateIndicators(const BmsController *controller)
 {
-    /* 先准备好默认电平：两颗灯都熄灭。 */
+    /* 负载默认关闭，板载LED默认熄灭。 */
+    GPIO_PinState load_level = GPIO_PIN_RESET;
     GPIO_PinState run_level = GPIO_PIN_SET;
     GPIO_PinState fault_level = GPIO_PIN_SET;
 
     if (controller->machine.load_enabled == 1u)
     {
+        load_level = GPIO_PIN_SET;
         run_level = GPIO_PIN_RESET;
     }
 
-    /* 故障锁定期间一直亮，包括等待恢复和等待CLEAR的阶段。 */
     if (controller->machine.state == BMS_STATE_FAULT_LOCK)
     {
         fault_level = GPIO_PIN_RESET;
     }
 
-    HAL_GPIO_WritePin(LED_RUN_GPIO_Port, LED_RUN_Pin, run_level);
-    HAL_GPIO_WritePin(LED_FAULT_GPIO_Port, LED_FAULT_Pin, fault_level);
+    /* 先执行负载控制，再更新两颗状态灯。 */
+    HAL_GPIO_WritePin(
+        LOAD_EN_GPIO_Port, LOAD_EN_Pin, load_level);
+
+    HAL_GPIO_WritePin(
+        LED_RUN_GPIO_Port, LED_RUN_Pin, run_level);
+
+    HAL_GPIO_WritePin(
+        LED_FAULT_GPIO_Port, LED_FAULT_Pin, fault_level);
 }
 
 /* 只在本次ADC读取成功后调用，返回最近最多4次读数的平均值。 */
@@ -965,7 +975,6 @@ int main(void)
   MX_ADC1_Init();
   MX_CAN_Init();
   /* USER CODE BEGIN 2 */
-
   /* USER CODE END 2 */
 
   /* Call init function for freertos objects (in cmsis_os2.c) */
@@ -1128,6 +1137,12 @@ void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
   /* User can add his own implementation to report the HAL error return state */
+    /* 程序进入错误处理时，也先撤销负载使能。 */
+    __HAL_RCC_GPIOA_CLK_ENABLE();
+
+    HAL_GPIO_WritePin(
+        LOAD_EN_GPIO_Port, LOAD_EN_Pin, GPIO_PIN_RESET);
+
   __disable_irq();
   while (1)
   {
