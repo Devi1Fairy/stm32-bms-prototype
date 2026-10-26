@@ -151,27 +151,27 @@
         <Ww>
           <count>0</count>
           <WinNumber>1</WinNumber>
-          <ItemText>bms_adc_raw</ItemText>
+          <ItemText>bms_rtos_loop_count</ItemText>
         </Ww>
         <Ww>
           <count>1</count>
           <WinNumber>1</WinNumber>
-          <ItemText>bms_adc_input_mv</ItemText>
+          <ItemText>bms_rtos_led_count</ItemText>
         </Ww>
         <Ww>
           <count>2</count>
           <WinNumber>1</WinNumber>
-          <ItemText>bms_adc_cell0_mv</ItemText>
+          <ItemText>bms_rtos_app_stack_free_words</ItemText>
         </Ww>
         <Ww>
           <count>3</count>
           <WinNumber>1</WinNumber>
-          <ItemText>bms_adc_read_ok</ItemText>
+          <ItemText>bms_rtos_led_stack_free_words</ItemText>
         </Ww>
         <Ww>
           <count>4</count>
           <WinNumber>1</WinNumber>
-          <ItemText>bms_adc_error_count</ItemText>
+          <ItemText>bms_rtos_heap_free_bytes</ItemText>
         </Ww>
         <Ww>
           <count>5</count>

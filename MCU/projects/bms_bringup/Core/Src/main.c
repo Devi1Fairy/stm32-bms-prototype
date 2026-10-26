@@ -31,6 +31,7 @@
 #include "bms_controller.h"
 #include <stdio.h>
 #include <math.h>
+#include "queue.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -99,8 +100,14 @@ static BmsSample bms_sample = {0};
 static BmsController bms_controller;
 static char uart_tx_buffer[256];
 
-/* 单槽命令入口：由Watch或串口中断写入，主循环取走后清空。 */
-static volatile BmsCommand bms_debug_command = BMS_CMD_NONE;
+/* 队列保存命令值，最多暂存8条普通命令。 */
+static QueueHandle_t bms_command_queue = NULL;
+
+/* STOP单独保留，不依赖普通队列是否还有空位。 */
+static volatile uint8_t bms_stop_requested = 0u;
+
+/* 普通命令未能入队的次数，用于观察拥塞。 */
+static volatile uint32_t bms_command_drop_count = 0u;
 /* 1：生成新模拟采样；0：保留旧快照，用来验证采样超时。 */
 static volatile uint8_t bms_sim_sampling_enabled = 1u;
 
@@ -192,42 +199,90 @@ void MX_FREERTOS_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-/* 取走待处理命令；避免取出和清空之间被串口中断插入。 */
-static BmsCommand Bms_TakePendingCommand(void)
+/* 记录入队失败，并请求停止；这里只短暂保护几个内存操作。 */
+static void Bms_RecordCommandDrop(void)
 {
-    BmsCommand command;
     uint32_t saved_primask = __get_PRIMASK();
 
-    /* 这里只保护几个内存操作，随后马上恢复原来的中断状态。 */
     __disable_irq();
-    command = bms_debug_command;
-    bms_debug_command = BMS_CMD_NONE;
+    bms_command_drop_count++;
+    bms_stop_requested = 1u;
     __set_PRIMASK(saved_primask);
+}
+
+/* 每个控制周期最多取一条普通命令，STOP优先。 */
+static BmsCommand Bms_TakePendingCommand(void)
+{
+    BmsCommand command = BMS_CMD_NONE;
+    uint32_t saved_primask;
+
+    /* 等待时间为0，队列为空时立即继续检查保护。 */
+    (void)xQueueReceive(bms_command_queue, &command, 0u);
+
+    saved_primask = __get_PRIMASK();
+    __disable_irq();
+
+    if (bms_stop_requested != 0u)
+    {
+        bms_stop_requested = 0u;
+        command = BMS_CMD_STOP;
+    }
+
+    __set_PRIMASK(saved_primask);
+
+    if (command == BMS_CMD_STOP)
+    {
+        /* 丢弃积压命令，避免停止后又执行旧的START。 */
+        (void)xQueueReset(bms_command_queue);
+    }
 
     return command;
 }
-
-/* 串口和CAN都从这里提交请求，状态机仍由主循环统一执行。 */
+/* CAN从任务调用，串口从中断调用，分别使用对应的队列接口。 */
 static void Bms_PostCommand(BmsCommand command)
 {
-    uint32_t saved_primask;
+    BaseType_t result;
+    BaseType_t task_woken = pdFALSE;
+    uint32_t in_isr = __get_IPSR();
 
     if (command == BMS_CMD_NONE)
     {
         return;
     }
 
-    saved_primask = __get_PRIMASK();
-    __disable_irq();
-
-    /* STOP还没被取走时，后来的START或CLEAR不能把它覆盖。 */
-    if ((command == BMS_CMD_STOP)
-        || (bms_debug_command != BMS_CMD_STOP))
+    if (command == BMS_CMD_STOP)
     {
-        bms_debug_command = command;
+        bms_stop_requested = 1u;
+        return;
     }
 
-    __set_PRIMASK(saved_primask);
+    if (bms_command_queue == NULL)
+    {
+        Bms_RecordCommandDrop();
+        return;
+    }
+
+    if (in_isr != 0u)
+    {
+        result = xQueueSendFromISR(
+            bms_command_queue, &command, &task_woken);
+    }
+    else
+    {
+        result = xQueueSend(bms_command_queue, &command, 0u);
+    }
+
+    if (result != pdPASS)
+    {
+        /* 队列满时立即返回，并通过STOP请求停止。 */
+        Bms_RecordCommandDrop();
+    }
+
+    if (in_isr != 0u)
+    {
+        /* 需要时，在退出中断后安排一次任务切换。 */
+        portYIELD_FROM_ISR(task_woken);
+    }
 }
 
 /* 只解析本项目的启动/停止命令，不直接改变状态或控制GPIO。 */
@@ -726,6 +781,14 @@ static void Bms_CanStatusPoll(uint32_t now_ms)
 void Bms_RunTask(void)
 {
     uint32_t now_ms;
+
+    /* 只在启动时创建一次，必须早于开启串口接收。 */
+    bms_command_queue = xQueueCreate(8u, sizeof(BmsCommand));
+
+    if (bms_command_queue == NULL)
+    {
+        Error_Handler();
+    }
 
     /* ADC只需要在开始工作前校准一次。 */
     if (HAL_ADCEx_Calibration_Start(&hadc1) != HAL_OK)
