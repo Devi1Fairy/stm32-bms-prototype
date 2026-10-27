@@ -151,47 +151,27 @@
         <Ww>
           <count>0</count>
           <WinNumber>1</WinNumber>
-          <ItemText>bms_rtos_loop_count</ItemText>
+          <ItemText>bms_ina226_found</ItemText>
         </Ww>
         <Ww>
           <count>1</count>
           <WinNumber>1</WinNumber>
-          <ItemText>bms_rtos_led_count</ItemText>
+          <ItemText>bms_ina226_address7</ItemText>
         </Ww>
         <Ww>
           <count>2</count>
           <WinNumber>1</WinNumber>
-          <ItemText>bms_rtos_app_stack_free_words</ItemText>
+          <ItemText>bms_ina226_ack_count</ItemText>
         </Ww>
         <Ww>
           <count>3</count>
           <WinNumber>1</WinNumber>
-          <ItemText>bms_rtos_led_stack_free_words</ItemText>
+          <ItemText>bms_ina226_manufacturer</ItemText>
         </Ww>
         <Ww>
           <count>4</count>
           <WinNumber>1</WinNumber>
-          <ItemText>bms_rtos_heap_free_bytes</ItemText>
-        </Ww>
-        <Ww>
-          <count>5</count>
-          <WinNumber>1</WinNumber>
-          <ItemText>bms_sample.cell_mv[0]</ItemText>
-        </Ww>
-        <Ww>
-          <count>6</count>
-          <WinNumber>1</WinNumber>
-          <ItemText>(*(unsigned long *)0x40010804) &amp; 0xF</ItemText>
-        </Ww>
-        <Ww>
-          <count>7</count>
-          <WinNumber>1</WinNumber>
-          <ItemText>(*(unsigned long *)0x4001080C) &amp; 0x100</ItemText>
-        </Ww>
-        <Ww>
-          <count>8</count>
-          <WinNumber>1</WinNumber>
-          <ItemText>(*(unsigned long *)0x40010808) &amp; 0x100</ItemText>
+          <ItemText>bms_ina226_die_id</ItemText>
         </Ww>
       </WatchWindow1>
       <Tracepoint>

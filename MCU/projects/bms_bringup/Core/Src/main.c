@@ -74,6 +74,12 @@
 /* 单位0.1℃；手温测试时临时改为280/260，测试后恢复。 */
 #define DEMO_OVER_TEMP_DC       600
 #define DEMO_RECOVER_TEMP_DC    550
+
+/* 实物R100对应100毫欧；不要写成100欧。 */
+#define INA226_SHUNT_MOHM  100u
+
+/* 16次平均，分流/总线各1.1ms，连续转换。 */
+#define INA226_CONFIG_VALUE  0x4527u
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -197,6 +203,15 @@ static volatile uint8_t bms_ina226_ack_count = 0u;
 static volatile uint16_t bms_ina226_manufacturer = 0u;
 static volatile uint16_t bms_ina226_die_id = 0u;
 
+/* INA226真实测量的调试值，本步暂不替换BMS里的模拟电流。 */
+static volatile uint8_t bms_ina226_configured = 0u;
+static volatile int32_t bms_ina226_result = -1;
+static volatile int32_t bms_ina226_shunt_raw = 0;
+static volatile int32_t bms_ina226_current_ma = 0;
+static volatile uint32_t bms_ina226_bus_mv = 0u;
+static volatile uint32_t bms_ina226_last_ms = 0u;
+static volatile uint32_t bms_ina226_read_count = 0u;
+static volatile uint32_t bms_ina226_error_count = 0u;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -864,6 +879,104 @@ static void Bms_Ina226Probe(void)
     /* 未找到时保留found=0，供排查；本步不停止原有BMS演示。 */
 }
 
+/* 写16位寄存器，同样先发送高字节。 */
+static uint8_t Bms_Ina226WriteReg16(uint8_t reg, uint16_t value)
+{
+    uint8_t data[2];
+
+    data[0] = (uint8_t)(value >> 8);
+    data[1] = (uint8_t)value;
+
+    return HAL_I2C_Mem_Write(
+        &hi2c1, (uint16_t)(bms_ina226_address7 << 1),
+        reg, I2C_MEMADD_SIZE_8BIT,
+        data, 2u, 5u) == HAL_OK;
+}
+
+/* 身份检查通过后配置一次，并读回确认写入成功。 */
+static uint8_t Bms_Ina226Configure(void)
+{
+    uint16_t config;
+
+    if (bms_ina226_found == 0u)
+    {
+        return 0u;
+    }
+
+    if ((Bms_Ina226WriteReg16(
+            0x00u, INA226_CONFIG_VALUE) == 0u)
+        || (Bms_Ina226ReadReg16(
+            bms_ina226_address7, 0x00u, &config) == 0u))
+    {
+        return 0u;
+    }
+
+    return config == INA226_CONFIG_VALUE;
+}
+
+/* 返回1：新数据；0：还没新数据；-1：读取或量程异常。 */
+static int32_t Bms_Ina226ReadSample(void)
+{
+    uint16_t status;
+    uint16_t shunt;
+    uint16_t bus;
+    int32_t raw;
+    int32_t numerator;
+    int32_t denominator;
+
+    if (bms_ina226_configured == 0u)
+    {
+        return -1;
+    }
+
+    /* 0x06的第3位表示转换完成；读取该寄存器会清除此标志。 */
+    if (Bms_Ina226ReadReg16(
+            bms_ina226_address7, 0x06u, &status) == 0u)
+    {
+        return -1;
+    }
+
+    if ((status & 0x0008u) == 0u)
+    {
+        return 0;
+    }
+
+    if ((Bms_Ina226ReadReg16(
+            bms_ina226_address7, 0x01u, &shunt) == 0u)
+        || (Bms_Ina226ReadReg16(
+            bms_ina226_address7, 0x02u, &bus) == 0u))
+    {
+        return -1;
+    }
+
+    /* 两个电流满量程端点保守判异常；总线电压检查0～36V范围。 */
+    if ((shunt == 0x7FFFu) || (shunt == 0x8000u) || (bus > 28800u))
+    {
+        return -1;
+    }
+
+    /* 分流电压是16位有符号数，显式处理负电流补码。 */
+    raw = (shunt & 0x8000u) != 0u
+        ? (int32_t)shunt - 65536 : (int32_t)shunt;
+
+    /* 每码2.5微伏：电流mA = raw × 5 / (2 × 分流电阻毫欧数)。 */
+    numerator = raw * 5;
+    denominator = (int32_t)INA226_SHUNT_MOHM * 2;
+
+    bms_ina226_shunt_raw = raw;
+    bms_ina226_current_ma = numerator >= 0
+        ? (numerator + denominator / 2) / denominator
+        : -((-numerator + denominator / 2) / denominator);
+
+    /* 总线电压每码1.25mV，取整保存为毫伏。 */
+    bms_ina226_bus_mv = ((uint32_t)bus * 5u + 2u) / 4u;
+
+    /* 只有完整取得新数据时，才刷新时间和成功计数。 */
+    bms_ina226_last_ms = HAL_GetTick();
+    bms_ina226_read_count++;
+    return 1;
+}
+
 /* 业务任务：集中处理采样、保护、CAN和串口。 */
 void Bms_RunTask(void)
 {
@@ -888,6 +1001,7 @@ void Bms_RunTask(void)
 
     /* 开始正常业务前，先进行一次I²C身份检查。 */
     Bms_Ina226Probe();
+    bms_ina226_configured = Bms_Ina226Configure();
 
     now_ms = HAL_GetTick();
     uart_last_ms = now_ms;
@@ -929,6 +1043,12 @@ void Bms_RunTask(void)
             if (bms_sim_sampling_enabled == 1u)
             {
                 Bms_UpdateDemoSample(&bms_sample, now_ms);
+                
+                bms_ina226_result = Bms_Ina226ReadSample();
+                if (bms_ina226_result < 0)
+                {
+                    bms_ina226_error_count++;
+                }
             }
 
             command = Bms_TakePendingCommand();
