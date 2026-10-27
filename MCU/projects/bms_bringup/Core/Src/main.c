@@ -21,6 +21,7 @@
 #include "cmsis_os.h"
 #include "adc.h"
 #include "can.h"
+#include "i2c.h"
 #include "usart.h"
 #include "gpio.h"
 
@@ -188,6 +189,13 @@ static volatile uint32_t bms_ntc_raw = 0u;
 static volatile uint32_t bms_ntc_input_mv = 0u;
 static volatile uint8_t bms_ntc_read_ok = 0u;
 static volatile uint32_t bms_ntc_error_count = 0u;
+
+/* INA226身份检查结果，供Keil Watch观察。 */
+static volatile uint8_t bms_ina226_found = 0u;
+static volatile uint8_t bms_ina226_address7 = 0u;
+static volatile uint8_t bms_ina226_ack_count = 0u;
+static volatile uint16_t bms_ina226_manufacturer = 0u;
+static volatile uint16_t bms_ina226_die_id = 0u;
 
 /* USER CODE END PV */
 
@@ -787,6 +795,75 @@ static void Bms_CanStatusPoll(uint32_t now_ms)
     can_report_requested = 0u;
 }
 
+/* 读一个16位寄存器：先收到高字节，再收到低字节。 */
+static uint8_t Bms_Ina226ReadReg16(
+    uint8_t address7, uint8_t reg, uint16_t *value)
+{
+    uint8_t data[2];
+
+    /* HAL要求把7位设备地址左移一位，读写方向由HAL处理。 */
+    if (HAL_I2C_Mem_Read(
+            &hi2c1, (uint16_t)(address7 << 1),
+            reg, I2C_MEMADD_SIZE_8BIT,
+            data, 2u, 5u) != HAL_OK)
+    {
+        return 0u;
+    }
+
+    /* 寄存器编号是1字节；寄存器内容是2字节。 */
+    *value = (uint16_t)(((uint16_t)data[0] << 8) | data[1]);
+    return 1u;
+}
+
+/* 只在业务任务启动时执行一次，寻找并核对INA226身份。 */
+static void Bms_Ina226Probe(void)
+{
+    uint8_t address7;
+    uint16_t manufacturer;
+    uint16_t die_id;
+
+    bms_ina226_found = 0u;
+    bms_ina226_address7 = 0u;
+    bms_ina226_ack_count = 0u;
+    bms_ina226_manufacturer = 0u;
+    bms_ina226_die_id = 0u;
+
+    /* INA226的合法7位地址为0x40到0x4F。 */
+    for (address7 = 0x40u; address7 <= 0x4Fu; ++address7)
+    {
+        if (HAL_I2C_IsDeviceReady(
+                &hi2c1, (uint16_t)(address7 << 1),
+                1u, 5u) != HAL_OK)
+        {
+            continue;
+        }
+
+        bms_ina226_ack_count++;
+
+        if ((Bms_Ina226ReadReg16(
+                address7, 0xFEu, &manufacturer) == 0u)
+            || (Bms_Ina226ReadReg16(
+                address7, 0xFFu, &die_id) == 0u))
+        {
+            continue;
+        }
+
+        bms_ina226_manufacturer = manufacturer;
+        bms_ina226_die_id = die_id;
+
+        /* 保留完整Die ID供观察，用高12位核对INA226型号。 */
+        if ((manufacturer == 0x5449u)
+            && ((die_id & 0xFFF0u) == 0x2260u))
+        {
+            bms_ina226_address7 = address7;
+            bms_ina226_found = 1u;
+            return;
+        }
+    }
+
+    /* 未找到时保留found=0，供排查；本步不停止原有BMS演示。 */
+}
+
 /* 业务任务：集中处理采样、保护、CAN和串口。 */
 void Bms_RunTask(void)
 {
@@ -808,6 +885,9 @@ void Bms_RunTask(void)
 
     Bms_ControllerInit(&bms_controller);
     Bms_UpdateIndicators(&bms_controller);
+
+    /* 开始正常业务前，先进行一次I²C身份检查。 */
+    Bms_Ina226Probe();
 
     now_ms = HAL_GetTick();
     uart_last_ms = now_ms;
@@ -974,6 +1054,7 @@ int main(void)
   MX_USART1_UART_Init();
   MX_ADC1_Init();
   MX_CAN_Init();
+  MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
   /* USER CODE END 2 */
 
