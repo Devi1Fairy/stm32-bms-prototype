@@ -106,7 +106,7 @@ static uint32_t bms_last_ms = 0u;
 /* 采样快照和控制器都需要在多次循环之间保留。 */
 static BmsSample bms_sample = {0};
 static BmsController bms_controller;
-static char uart_tx_buffer[256];
+static char uart_tx_buffer[384];
 
 /* 队列保存命令值，最多暂存8条普通命令。 */
 static QueueHandle_t bms_command_queue = NULL;
@@ -145,15 +145,14 @@ static volatile uint32_t bms_adc_filtered_input_mv = 0u;
 
 /* 未标定估算温度，单位0.1℃；采样失败时保留旧值。 */
 static volatile int32_t bms_ntc_temp_est_dC = 0;
-/* 模拟电流，单位mA：正数表示放电，负数表示充电。 */
-static volatile int32_t bms_sim_current_ma = 0;
+
 /* 仅用于软件演示，不能直接作为真实电池的保护参数。 */
 static const BmsControllerConfig bms_config = {
     .uv_threshold_mv = 3000,
     .ov_threshold_mv = 4200,
     .over_temp_dC = DEMO_OVER_TEMP_DC,          /* 60.0℃ */
-    .discharge_limit_ma = 1000,
-    .charge_limit_ma = 500,
+    .discharge_limit_ma = 80,
+    .charge_limit_ma = 80,
     .voltage_max_age_ms = 500u,
     .temperature_max_age_ms = 500u,
     .current_max_age_ms = 500u,
@@ -161,8 +160,8 @@ static const BmsControllerConfig bms_config = {
         .cell_min_mv = 3200,
         .cell_max_mv = 4100,
         .max_temperature_dC = DEMO_RECOVER_TEMP_DC,
-        .discharge_limit_ma = 800,
-        .charge_limit_ma = 300,
+        .discharge_limit_ma = 60,
+        .charge_limit_ma = 60,
         .voltage_max_age_ms = 500u,
         .temperature_max_age_ms = 500u,
         .current_max_age_ms = 500u,
@@ -576,11 +575,6 @@ static void Bms_UpdateDemoSample(BmsSample *sample, uint32_t now_ms)
         sample->cell_mv[i].source = BMS_SOURCE_SIMULATED;
     }
 
-    sample->current_ma.value = bms_sim_current_ma;
-    sample->current_ma.timestamp_ms = now_ms;
-    sample->current_ma.valid = 1u;
-    sample->current_ma.source = BMS_SOURCE_SIMULATED;
-
     sample->temperature_dC.source = BMS_SOURCE_ADC;
     bms_ntc_read_ok = Bms_ReadNtcVoltage();
     if ((bms_ntc_read_ok == 1u)
@@ -977,6 +971,27 @@ static int32_t Bms_Ina226ReadSample(void)
     return 1;
 }
 
+/* 把INA226的新读数交给BMS；失败时不伪造零电流或刷新旧时间。 */
+static void Bms_UpdateCurrentMeasurement(BmsSample *sample)
+{
+    sample->current_ma.source = BMS_SOURCE_EXTERNAL;
+    bms_ina226_result = Bms_Ina226ReadSample();
+
+    if (bms_ina226_result == 1)
+    {
+        sample->current_ma.value = bms_ina226_current_ma;
+        sample->current_ma.timestamp_ms = bms_ina226_last_ms;
+        sample->current_ma.valid = 1u;
+    }
+    else if (bms_ina226_result < 0)
+    {
+        sample->current_ma.valid = 0u;
+        bms_ina226_error_count++;
+    }
+
+    /* result为0时保留原记录，让已有的500ms超时检查发挥作用。 */
+}
+
 /* 业务任务：集中处理采样、保护、CAN和串口。 */
 void Bms_RunTask(void)
 {
@@ -1043,13 +1058,11 @@ void Bms_RunTask(void)
             if (bms_sim_sampling_enabled == 1u)
             {
                 Bms_UpdateDemoSample(&bms_sample, now_ms);
-                
-                bms_ina226_result = Bms_Ina226ReadSample();
-                if (bms_ina226_result < 0)
-                {
-                    bms_ina226_error_count++;
-                }
+                Bms_UpdateCurrentMeasurement(&bms_sample);
             }
+
+            /* 采样可能消耗时间，保护检查必须使用采样之后的当前时间。 */
+            now_ms = HAL_GetTick();
 
             command = Bms_TakePendingCommand();
 
@@ -1077,22 +1090,23 @@ void Bms_RunTask(void)
                 uart_tx_buffer,
                 sizeof(uart_tx_buffer),
                 "BMS state=%u, faults=0x%08lX, latched=0x%08lX, "
-                "load=%u, clear=%u, raw=%lu, avg=%lu, "
-                "ntc_raw=%lu, ntc_mv=%lu, temp_est_dC=%ld, "
-                "tv=%u, tlim=%ld, temp_src=%u\r\n",
+                "load=%u, clear=%u, cell0_mv=%ld, temp_est_dC=%ld, "
+                "i_ma=%ld, iv=%u, i_src=%u, i_age=%lu, "
+                "ina=%ld, bus_mv=%lu\r\n",
                 (unsigned int)bms_controller.machine.state,
                 (unsigned long)bms_controller.active_faults,
                 (unsigned long)bms_controller.machine.latched_faults,
                 (unsigned int)bms_controller.machine.load_enabled,
                 (unsigned int)bms_controller.clear_allowed,
-                (unsigned long)bms_adc_raw,
-                (unsigned long)bms_adc_filtered_raw,
-                (unsigned long)bms_ntc_raw,
-                (unsigned long)bms_ntc_input_mv,
+                (long)bms_sample.cell_mv[0].value,
                 (long)bms_sample.temperature_dC.value,
-                (unsigned int)bms_sample.temperature_dC.valid,
-                (long)bms_config.over_temp_dC,
-                (unsigned int)bms_sample.temperature_dC.source);
+                (long)bms_sample.current_ma.value,
+                (unsigned int)bms_sample.current_ma.valid,
+                (unsigned int)bms_sample.current_ma.source,
+                (unsigned long)(uint32_t)(
+                    now_ms - bms_sample.current_ma.timestamp_ms),
+                (long)bms_ina226_result,
+                (unsigned long)bms_ina226_bus_mv);
 
             if ((length <= 0)
                 || ((size_t)length >= sizeof(uart_tx_buffer)))

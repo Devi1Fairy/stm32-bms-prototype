@@ -17,10 +17,13 @@
 /* 给数据来源起名字，便于分辨数据是软件构造的，还是来自采样器件。 */
 typedef enum
 {
-    BMS_SOURCE_NONE = 0,  /* 尚未取得数据；变量全清零时也对应这个状态。 */
-    BMS_SOURCE_SIMULATED, /* 软件手动构造的数据，用于无板练习和测试。 */
-    BMS_SOURCE_ADC,       /* 通过 MCU 的 ADC 采集，例如电位器或 NTC 分压。 */
-    BMS_SOURCE_AFE        /* 通过电池采样前端取得，例如后续计划接入的 BQ76920。 */
+    BMS_SOURCE_NONE = 0,  /* 尚未取得数据。 */
+    BMS_SOURCE_SIMULATED, /* 软件构造的数据。 */
+    BMS_SOURCE_ADC,       /* MCU自己的ADC采样。 */
+    BMS_SOURCE_EXTERNAL,  /* 外部数字采样，例如I2C连接的INA226。 */
+
+    /* 兼容原来的名字，数值仍然是3。 */
+    BMS_SOURCE_AFE = BMS_SOURCE_EXTERNAL
 } BmsSampleSource;
 
 /* 一路测量的数据包：数值、采样时间、有效性和来源放在一起。 */
