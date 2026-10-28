@@ -49,6 +49,7 @@
 /* USER CODE END Variables */
 osThreadId defaultTaskHandle;
 osThreadId ledTaskHandle;
+osThreadId commTaskHandle;
 
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN FunctionPrototypes */
@@ -57,6 +58,7 @@ osThreadId ledTaskHandle;
 
 void StartDefaultTask(void const * argument);
 void StartLedTask(void const * argument);
+void StartCommTask(void const * argument);
 
 void MX_FREERTOS_Init(void); /* (MISRA C 2004 rule 8.1) */
 
@@ -84,6 +86,7 @@ void MX_FREERTOS_Init(void) {
 
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
+    Bms_CreateQueues();
   /* USER CODE END RTOS_QUEUES */
 
   /* Create the thread(s) */
@@ -95,10 +98,16 @@ void MX_FREERTOS_Init(void) {
   osThreadDef(ledTask, StartLedTask, osPriorityBelowNormal, 0, 128);
   ledTaskHandle = osThreadCreate(osThread(ledTask), NULL);
 
+  /* definition and creation of commTask */
+  osThreadDef(commTask, StartCommTask, osPriorityBelowNormal, 0, 768);
+  commTaskHandle = osThreadCreate(osThread(commTask), NULL);
+
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
     /* 内存不足等原因可能导致任务创建失败。 */
-    if ((defaultTaskHandle == NULL) || (ledTaskHandle == NULL))
+    if ((defaultTaskHandle == NULL)
+        || (ledTaskHandle == NULL)
+        || (commTaskHandle == NULL))
     {
         Error_Handler();
     }
@@ -136,6 +145,25 @@ void StartLedTask(void const * argument)
   (void)argument;
     Bms_RunHeartbeatTask();
   /* USER CODE END StartLedTask */
+}
+
+/* USER CODE BEGIN Header_StartCommTask */
+/**
+* @brief Function implementing the commTask thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_StartCommTask */
+void StartCommTask(void const * argument)
+{
+  /* USER CODE BEGIN StartCommTask */
+  /* Infinite loop */
+  for(;;)
+  {
+    (void)argument;
+    Bms_RunCommTask();;
+  }
+  /* USER CODE END StartCommTask */
 }
 
 /* Private application code --------------------------------------------------*/

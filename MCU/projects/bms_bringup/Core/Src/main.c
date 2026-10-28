@@ -38,7 +38,16 @@
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-
+/* 一份完整报告由业务任务生成，通信任务只使用自己的副本。 */
+typedef struct
+{
+    BmsSample sample;
+    BmsController controller;
+    int32_t ina_result;
+    uint32_t bus_mv;
+    uint32_t control_count;
+    uint32_t control_max_interval_ms;
+} BmsTelemetry;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -211,6 +220,21 @@ static volatile uint32_t bms_ina226_bus_mv = 0u;
 static volatile uint32_t bms_ina226_last_ms = 0u;
 static volatile uint32_t bms_ina226_read_count = 0u;
 static volatile uint32_t bms_ina226_error_count = 0u;
+
+/* 最新报告只留一份；普通命令仍使用原来的8项队列。 */
+static QueueHandle_t bms_telemetry_queue = NULL;
+
+static volatile uint32_t bms_rtos_comm_loop_count = 0u;
+static volatile uint32_t bms_rtos_comm_stack_free_words = 0u;
+static volatile uint32_t bms_uart_tx_error_count = 0u;
+
+/* 记录控制检查完成的次数与相邻完成时刻的最大间隔。 */
+static volatile uint32_t bms_control_cycle_count = 0u;
+static uint32_t bms_control_last_ms = 0u;
+static volatile uint32_t bms_control_max_interval_ms = 0u;
+
+/* 仅用于实验：UART发送D，在0和1000ms通信延迟之间切换。 */
+static volatile uint32_t bms_comm_test_delay_ms = 0u;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -652,7 +676,8 @@ static uint8_t Bms_CanMeasurementFresh(
 }
 
 /* 上报一节模拟单体电压、温度、电流及数据标志。 */
-static uint8_t Bms_CanSendMeasurements(uint32_t now_ms)
+static uint8_t Bms_CanSendMeasurements(
+    const BmsTelemetry *report, uint32_t now_ms)
 {
     CAN_TxHeaderTypeDef header = {0};
     uint32_t mailbox = 0u;
@@ -665,39 +690,39 @@ static uint8_t Bms_CanSendMeasurements(uint32_t now_ms)
 
     /* 超时、无效或超出报文范围时，保持占位0，不设置有效位。 */
     if (Bms_CanMeasurementFresh(
-            &bms_sample.cell_mv[0], now_ms,
+            &report->sample.cell_mv[0], now_ms,
             bms_config.voltage_max_age_ms)
-        && (bms_sample.cell_mv[0].value >= 0)
-        && (bms_sample.cell_mv[0].value <= 65535))
+        && (report->sample.cell_mv[0].value >= 0)
+        && (report->sample.cell_mv[0].value <= 65535))
     {
-        voltage = (uint16_t)bms_sample.cell_mv[0].value;
+        voltage = (uint16_t)report->sample.cell_mv[0].value;
         flags |= 0x01u;
-        sources |= (uint8_t)bms_sample.cell_mv[0].source;
+        sources |= (uint8_t)report->sample.cell_mv[0].source;
     }
 
     if (Bms_CanMeasurementFresh(
-            &bms_sample.temperature_dC, now_ms,
+            &report->sample.temperature_dC, now_ms,
             bms_config.temperature_max_age_ms)
-        && (bms_sample.temperature_dC.value >= -32768)
-        && (bms_sample.temperature_dC.value <= 32767))
+        && (report->sample.temperature_dC.value >= -32768)
+        && (report->sample.temperature_dC.value <= 32767))
     {
         /* 负数转换为16位无符号数后，按补码字节发送。 */
-        temperature = (uint16_t)bms_sample.temperature_dC.value;
+        temperature = (uint16_t)report->sample.temperature_dC.value;
         flags |= 0x02u;
         sources |= (uint8_t)(
-            (uint8_t)bms_sample.temperature_dC.source << 2);
+            (uint8_t)report->sample.temperature_dC.source << 2);
     }
 
     if (Bms_CanMeasurementFresh(
-            &bms_sample.current_ma, now_ms,
+            &report->sample.current_ma, now_ms,
             bms_config.current_max_age_ms)
-        && (bms_sample.current_ma.value >= -32768)
-        && (bms_sample.current_ma.value <= 32767))
+        && (report->sample.current_ma.value >= -32768)
+        && (report->sample.current_ma.value <= 32767))
     {
-        current = (uint16_t)bms_sample.current_ma.value;
+        current = (uint16_t)report->sample.current_ma.value;
         flags |= 0x04u;
         sources |= (uint8_t)(
-            (uint8_t)bms_sample.current_ma.source << 4);
+            (uint8_t)report->sample.current_ma.source << 4);
     }
 
     /* 每个16位数均按低字节在前发送。 */
@@ -726,7 +751,8 @@ static uint8_t Bms_CanSendMeasurements(uint32_t now_ms)
 }
 
 /* 每轮主循环调用：先收已有的帧，到时间再发，不等待收发完成。 */
-static void Bms_CanStatusPoll(uint32_t now_ms)
+static void Bms_CanStatusPoll(
+    const BmsTelemetry *report, uint32_t now_ms)
 {
     CAN_TxHeaderTypeDef tx_header = {0};
     uint32_t tx_mailbox = 0u;
@@ -769,14 +795,14 @@ static void Bms_CanStatusPoll(uint32_t now_ms)
     }
 
     /* 把最新控制结果装进8字节；故障位图按低字节在前存放。 */
-    can_status_tx_data[0] = (uint8_t)bms_controller.machine.state;
-    can_status_tx_data[1] = bms_controller.machine.load_enabled;
-    can_status_tx_data[2] = bms_controller.clear_allowed;
+    can_status_tx_data[0] = (uint8_t)report->controller.machine.state;
+    can_status_tx_data[1] = report->controller.machine.load_enabled;
+    can_status_tx_data[2] = report->controller.clear_allowed;
     can_status_tx_data[3] = can_status_next_sequence;
-    can_status_tx_data[4] = (uint8_t)bms_controller.active_faults;
-    can_status_tx_data[5] = (uint8_t)(bms_controller.active_faults >> 8);
-    can_status_tx_data[6] = (uint8_t)(bms_controller.active_faults >> 16);
-    can_status_tx_data[7] = (uint8_t)(bms_controller.active_faults >> 24);
+    can_status_tx_data[4] = (uint8_t)report->controller.active_faults;
+    can_status_tx_data[5] = (uint8_t)(report->controller.active_faults >> 8);
+    can_status_tx_data[6] = (uint8_t)(report->controller.active_faults >> 16);
+    can_status_tx_data[7] = (uint8_t)(report->controller.active_faults >> 24);
 
     tx_header.StdId = CAN_STATUS_STD_ID;
     tx_header.IDE = CAN_ID_STD;
@@ -794,7 +820,7 @@ static void Bms_CanStatusPoll(uint32_t now_ms)
     can_status_tx_count++;
     can_status_next_sequence = (uint8_t)(can_status_next_sequence + 1u);
 
-    if (Bms_CanSendMeasurements(now_ms) == 0u)
+    if (Bms_CanSendMeasurements(report, now_ms) == 0u)
     {
         can_status_error_count++;
         return;
@@ -992,20 +1018,39 @@ static void Bms_UpdateCurrentMeasurement(BmsSample *sample)
     /* result为0时保留原记录，让已有的500ms超时检查发挥作用。 */
 }
 
-/* 业务任务：集中处理采样、保护、CAN和串口。 */
+/* 在创建任务之前调用一次，避免接收中断先于队列启动。 */
+void Bms_CreateQueues(void)
+{
+    bms_command_queue = xQueueCreate(8u, sizeof(BmsCommand));
+    bms_telemetry_queue = xQueueCreate(1u, sizeof(BmsTelemetry));
+
+    if ((bms_command_queue == NULL) || (bms_telemetry_queue == NULL))
+    {
+        Error_Handler();
+    }
+}
+
+/* 队列复制整个结构体；通信任务不会直接读取正在更新的业务数据。 */
+static void Bms_PublishTelemetry(void)
+{
+    BmsTelemetry report = {0};
+
+    report.sample = bms_sample;
+    report.controller = bms_controller;
+    report.ina_result = bms_ina226_result;
+    report.bus_mv = bms_ina226_bus_mv;
+    report.control_count = bms_control_cycle_count;
+    report.control_max_interval_ms = bms_control_max_interval_ms;
+
+    /* 长度为1的队列允许覆盖旧报告，不等待通信任务取走。 */
+    (void)xQueueOverwrite(bms_telemetry_queue, &report);
+}
+
+/* 业务任务保留采样、保护和负载控制，不执行串口发送。 */
 void Bms_RunTask(void)
 {
     uint32_t now_ms;
 
-    /* 只在启动时创建一次，必须早于开启串口接收。 */
-    bms_command_queue = xQueueCreate(8u, sizeof(BmsCommand));
-
-    if (bms_command_queue == NULL)
-    {
-        Error_Handler();
-    }
-
-    /* ADC只需要在开始工作前校准一次。 */
     if (HAL_ADCEx_Calibration_Start(&hadc1) != HAL_OK)
     {
         Error_Handler();
@@ -1014,44 +1059,19 @@ void Bms_RunTask(void)
     Bms_ControllerInit(&bms_controller);
     Bms_UpdateIndicators(&bms_controller);
 
-    /* 开始正常业务前，先进行一次I²C身份检查。 */
     Bms_Ina226Probe();
     bms_ina226_configured = Bms_Ina226Configure();
-
-    now_ms = HAL_GetTick();
-    uart_last_ms = now_ms;
-    bms_last_ms = now_ms;
-    can_status_last_ms = now_ms;
-
-    Bms_CanStart();
-
-    if (HAL_UART_Receive_IT(&huart1, &uart_rx_byte, 1u) != HAL_OK)
-    {
-        Error_Handler();
-    }
+    bms_last_ms = HAL_GetTick();
 
     for (;;)
     {
         now_ms = HAL_GetTick();
         bms_rtos_loop_count++;
 
-        /* 接收异常时重新启动，不在中断里执行恢复过程。 */
-        if (uart_rx_restart_required != 0u)
-        {
-            uart_rx_restart_required = 0u;
-
-            if ((HAL_UART_AbortReceive(&huart1) != HAL_OK)
-                || (HAL_UART_Receive_IT(
-                        &huart1, &uart_rx_byte, 1u) != HAL_OK))
-            {
-                uart_rx_restart_required = 1u;
-            }
-        }
-
-        /* 暂停采样时，仍按原周期检查保护和处理命令。 */
         if ((uint32_t)(now_ms - bms_last_ms) >= BMS_PERIOD_MS)
         {
             BmsCommand command;
+            uint32_t interval_ms;
 
             bms_last_ms = now_ms;
 
@@ -1061,52 +1081,109 @@ void Bms_RunTask(void)
                 Bms_UpdateCurrentMeasurement(&bms_sample);
             }
 
-            /* 采样可能消耗时间，保护检查必须使用采样之后的当前时间。 */
+            /* 读取可能耗时，使用采样后的时间进行保护检查。 */
             now_ms = HAL_GetTick();
-
             command = Bms_TakePendingCommand();
 
             Bms_ControllerStep(
-                &bms_controller,
-                &bms_sample,
-                &bms_config,
-                command,
-                DEMO_SELF_TEST_PASSED,
-                now_ms);
-
+                &bms_controller, &bms_sample, &bms_config,
+                command, DEMO_SELF_TEST_PASSED, now_ms);
             Bms_UpdateIndicators(&bms_controller);
+
+            /* 在实际执行输出后记录时间，第一轮不计算间隔。 */
+            now_ms = HAL_GetTick();
+            if (bms_control_cycle_count != 0u)
+            {
+                interval_ms = (uint32_t)(now_ms - bms_control_last_ms);
+                if (interval_ms > bms_control_max_interval_ms)
+                {
+                    bms_control_max_interval_ms = interval_ms;
+                }
+            }
+            bms_control_last_ms = now_ms;
+            bms_control_cycle_count++;
+            Bms_PublishTelemetry();
+
+            bms_rtos_app_stack_free_words =
+                (uint32_t)uxTaskGetStackHighWaterMark(NULL);
+            bms_rtos_heap_free_bytes =
+                (uint32_t)xPortGetFreeHeapSize();
         }
 
-        Bms_CanStatusPoll(now_ms);
+        osDelay(1u);
+    }
+}
 
-        /* 保持原来的串口日志内容和发送周期。 */
+/* 通信任务只读报告副本；启动、停止仍提交给业务任务决定。 */
+void Bms_RunCommTask(void)
+{
+    BmsTelemetry report;
+    uint32_t now_ms;
+    uint32_t delay_ms;
+
+    /* 首份报告产生前阻塞等待，避免发送未初始化的控制器状态。 */
+    if (xQueuePeek(bms_telemetry_queue, &report, portMAX_DELAY) != pdPASS)
+    {
+        Error_Handler();
+    }
+
+    Bms_CanStart();
+    if (HAL_UART_Receive_IT(&huart1, &uart_rx_byte, 1u) != HAL_OK)
+    {
+        Error_Handler();
+    }
+
+    now_ms = HAL_GetTick();
+    uart_last_ms = now_ms;
+    can_status_last_ms = now_ms;
+
+    for (;;)
+    {
+        bms_rtos_comm_loop_count++;
+
+        if (uart_rx_restart_required != 0u)
+        {
+            uart_rx_restart_required = 0u;
+            if ((HAL_UART_AbortReceive(&huart1) != HAL_OK)
+                || (HAL_UART_Receive_IT(
+                        &huart1, &uart_rx_byte, 1u) != HAL_OK))
+            {
+                uart_rx_restart_required = 1u;
+            }
+        }
+
+        /* Peek只复制，不取走；后续循环仍可检查这份报告是否过期。 */
+        (void)xQueuePeek(bms_telemetry_queue, &report, 0u);
+        now_ms = HAL_GetTick();
+        Bms_CanStatusPoll(&report, now_ms);
+
         if ((uint32_t)(now_ms - uart_last_ms) >= UART_PERIOD_MS)
         {
             int length;
 
             uart_last_ms = now_ms;
-
             length = snprintf(
-                uart_tx_buffer,
-                sizeof(uart_tx_buffer),
+                uart_tx_buffer, sizeof(uart_tx_buffer),
                 "BMS state=%u, faults=0x%08lX, latched=0x%08lX, "
                 "load=%u, clear=%u, cell0_mv=%ld, temp_est_dC=%ld, "
                 "i_ma=%ld, iv=%u, i_src=%u, i_age=%lu, "
-                "ina=%ld, bus_mv=%lu\r\n",
-                (unsigned int)bms_controller.machine.state,
-                (unsigned long)bms_controller.active_faults,
-                (unsigned long)bms_controller.machine.latched_faults,
-                (unsigned int)bms_controller.machine.load_enabled,
-                (unsigned int)bms_controller.clear_allowed,
-                (long)bms_sample.cell_mv[0].value,
-                (long)bms_sample.temperature_dC.value,
-                (long)bms_sample.current_ma.value,
-                (unsigned int)bms_sample.current_ma.valid,
-                (unsigned int)bms_sample.current_ma.source,
+                "ina=%ld, bus_mv=%lu, ctrl=%lu, gap_max=%lu\r\n",
+                (unsigned int)report.controller.machine.state,
+                (unsigned long)report.controller.active_faults,
+                (unsigned long)report.controller.machine.latched_faults,
+                (unsigned int)report.controller.machine.load_enabled,
+                (unsigned int)report.controller.clear_allowed,
+                (long)report.sample.cell_mv[0].value,
+                (long)report.sample.temperature_dC.value,
+                (long)report.sample.current_ma.value,
+                (unsigned int)report.sample.current_ma.valid,
+                (unsigned int)report.sample.current_ma.source,
                 (unsigned long)(uint32_t)(
-                    now_ms - bms_sample.current_ma.timestamp_ms),
-                (long)bms_ina226_result,
-                (unsigned long)bms_ina226_bus_mv);
+                    now_ms - report.sample.current_ma.timestamp_ms),
+                (long)report.ina_result,
+                (unsigned long)report.bus_mv,
+                (unsigned long)report.control_count,
+                (unsigned long)report.control_max_interval_ms);
 
             if ((length <= 0)
                 || ((size_t)length >= sizeof(uart_tx_buffer)))
@@ -1114,25 +1191,21 @@ void Bms_RunTask(void)
                 Error_Handler();
             }
 
+            /* 日志发送失败只计数，业务任务继续检查保护。 */
             if (HAL_UART_Transmit(
-                    &huart1,
-                    (const uint8_t *)uart_tx_buffer,
-                    (uint16_t)length,
-                    100u) != HAL_OK)
+                    &huart1, (const uint8_t *)uart_tx_buffer,
+                    (uint16_t)length, 100u) != HAL_OK)
             {
-                Error_Handler();
+                bms_uart_tx_error_count++;
             }
 
-            /* 记录任务栈的历史最小余量和当前堆余量。 */
-            bms_rtos_app_stack_free_words =
+            bms_rtos_comm_stack_free_words =
                 (uint32_t)uxTaskGetStackHighWaterMark(NULL);
-
-            bms_rtos_heap_free_bytes =
-                (uint32_t)xPortGetFreeHeapSize();
         }
 
-        /* 暂时阻塞业务任务，让其它就绪任务获得运行机会。 */
-        osDelay(1u);
+        /* 实验延迟只阻塞本任务，不暂停采样、保护和UART接收中断。 */
+        delay_ms = bms_comm_test_delay_ms;
+        osDelay(delay_ms == 0u ? 1u : delay_ms);
     }
 }
 
@@ -1289,7 +1362,11 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
         case 'C':
             Bms_PostCommand(BMS_CMD_CLEAR);
             break;
-
+        case 'D':
+            /* 实验开关：只延迟通信任务，复位后默认关闭。 */
+            bms_comm_test_delay_ms =
+                bms_comm_test_delay_ms == 0u ? 1000u : 0u;
+            break;
         case 'P':
             /* 暂停模拟采样；主循环和保护检查继续运行。 */
             bms_sim_sampling_enabled = 0u;
