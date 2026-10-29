@@ -25,6 +25,8 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "bms_tasks.h"
+#include "bms_ipc.h"
 
 /* USER CODE END Includes */
 
@@ -88,7 +90,10 @@ void MX_FREERTOS_Init(void) {
 
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
-    Bms_CreateQueues();
+    if (Bms_IpcInit() == 0u)
+    {
+        Error_Handler();
+    }
   /* USER CODE END RTOS_QUEUES */
 
   /* Create the thread(s) */
@@ -132,8 +137,7 @@ void MX_FREERTOS_Init(void) {
 void StartDefaultTask(void const * argument)
 {
   /* USER CODE BEGIN StartDefaultTask */
-  /* Infinite loop */
-  (void)argument;
+    (void)argument;
     Bms_RunTask();
   /* USER CODE END StartDefaultTask */
 }
@@ -148,8 +152,7 @@ void StartDefaultTask(void const * argument)
 void StartLedTask(void const * argument)
 {
   /* USER CODE BEGIN StartLedTask */
-  /* Infinite loop */
-  (void)argument;
+    (void)argument;
     Bms_RunHeartbeatTask();
   /* USER CODE END StartLedTask */
 }
@@ -164,12 +167,8 @@ void StartLedTask(void const * argument)
 void StartCommTask(void const * argument)
 {
   /* USER CODE BEGIN StartCommTask */
-  /* Infinite loop */
-  for(;;)
-  {
     (void)argument;
     Bms_RunCommTask();
-  }
   /* USER CODE END StartCommTask */
 }
 
@@ -183,12 +182,8 @@ void StartCommTask(void const * argument)
 void StartSampleTask(void const * argument)
 {
   /* USER CODE BEGIN StartSampleTask */
-  /* Infinite loop */
-  for(;;)
-  {
     (void)argument;
     Bms_RunSampleTask();
-  }
   /* USER CODE END StartSampleTask */
 }
 

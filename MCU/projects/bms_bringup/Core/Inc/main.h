@@ -53,12 +53,6 @@ extern "C" {
 void Error_Handler(void);
 
 /* USER CODE BEGIN EFP */
-/* 队列在调度器启动前创建，三个任务各自运行。 */
-void Bms_CreateQueues(void);
-void Bms_RunTask(void);
-void Bms_RunCommTask(void);
-void Bms_RunHeartbeatTask(void);
-void Bms_RunSampleTask(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
