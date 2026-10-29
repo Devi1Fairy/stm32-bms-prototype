@@ -58,6 +58,7 @@ void Bms_CreateQueues(void);
 void Bms_RunTask(void);
 void Bms_RunCommTask(void);
 void Bms_RunHeartbeatTask(void);
+void Bms_RunSampleTask(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/

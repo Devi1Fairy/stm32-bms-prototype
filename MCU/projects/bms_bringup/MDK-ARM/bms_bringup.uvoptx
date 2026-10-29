@@ -193,6 +193,16 @@
           <WinNumber>1</WinNumber>
           <ItemText>bms_ina226_bus_mv</ItemText>
         </Ww>
+        <Ww>
+          <count>9</count>
+          <WinNumber>1</WinNumber>
+          <ItemText>bms_rtos_comm_stack_free_words</ItemText>
+        </Ww>
+        <Ww>
+          <count>10</count>
+          <WinNumber>1</WinNumber>
+          <ItemText>bms_rtos_heap_free_bytes</ItemText>
+        </Ww>
       </WatchWindow1>
       <Tracepoint>
         <THDelay>0</THDelay>

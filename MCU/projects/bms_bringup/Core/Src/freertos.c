@@ -50,6 +50,7 @@
 osThreadId defaultTaskHandle;
 osThreadId ledTaskHandle;
 osThreadId commTaskHandle;
+osThreadId sampleTaskHandle;
 
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN FunctionPrototypes */
@@ -59,6 +60,7 @@ osThreadId commTaskHandle;
 void StartDefaultTask(void const * argument);
 void StartLedTask(void const * argument);
 void StartCommTask(void const * argument);
+void StartSampleTask(void const * argument);
 
 void MX_FREERTOS_Init(void); /* (MISRA C 2004 rule 8.1) */
 
@@ -91,7 +93,7 @@ void MX_FREERTOS_Init(void) {
 
   /* Create the thread(s) */
   /* definition and creation of defaultTask */
-  osThreadDef(defaultTask, StartDefaultTask, osPriorityNormal, 0, 1024);
+  osThreadDef(defaultTask, StartDefaultTask, osPriorityAboveNormal, 0, 1024);
   defaultTaskHandle = osThreadCreate(osThread(defaultTask), NULL);
 
   /* definition and creation of ledTask */
@@ -102,12 +104,17 @@ void MX_FREERTOS_Init(void) {
   osThreadDef(commTask, StartCommTask, osPriorityBelowNormal, 0, 768);
   commTaskHandle = osThreadCreate(osThread(commTask), NULL);
 
+  /* definition and creation of sampleTask */
+  osThreadDef(sampleTask, StartSampleTask, osPriorityNormal, 0, 512);
+  sampleTaskHandle = osThreadCreate(osThread(sampleTask), NULL);
+
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
     /* 内存不足等原因可能导致任务创建失败。 */
     if ((defaultTaskHandle == NULL)
         || (ledTaskHandle == NULL)
-        || (commTaskHandle == NULL))
+        || (commTaskHandle == NULL)
+        || (sampleTaskHandle == NULL))
     {
         Error_Handler();
     }
@@ -161,9 +168,28 @@ void StartCommTask(void const * argument)
   for(;;)
   {
     (void)argument;
-    Bms_RunCommTask();;
+    Bms_RunCommTask();
   }
   /* USER CODE END StartCommTask */
+}
+
+/* USER CODE BEGIN Header_StartSampleTask */
+/**
+* @brief Function implementing the sampleTask thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_StartSampleTask */
+void StartSampleTask(void const * argument)
+{
+  /* USER CODE BEGIN StartSampleTask */
+  /* Infinite loop */
+  for(;;)
+  {
+    (void)argument;
+    Bms_RunSampleTask();
+  }
+  /* USER CODE END StartSampleTask */
 }
 
 /* Private application code --------------------------------------------------*/
