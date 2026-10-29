@@ -35,3 +35,12 @@ Desktop.ini
 
 /.vscode/c_cpp_properties.json
 /.codex-remote-attachments/
+
+# Qt desktop build and local IDE configuration
+/host/**/build*/
+/host/**/.qtcreator/
+/host/**/CMakeFiles/
+/host/**/CMakeCache.txt
+/host/**/CMakeUserPresets.json
+*.user
+*.user.*
