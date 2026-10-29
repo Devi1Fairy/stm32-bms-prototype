@@ -821,6 +821,16 @@
                 </FileArmAds>
               </FileOption>
             </File>
+            <File>
+              <FileName>ina226.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\Core\Inc\ina226.h</FilePath>
+            </File>
+            <File>
+              <FileName>ina226.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Core\Src\ina226.c</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>

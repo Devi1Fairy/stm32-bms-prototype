@@ -34,6 +34,7 @@
 #include "queue.h"
 #include "FreeRTOS.h"
 #include "task.h"
+#include "ina226.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -99,8 +100,6 @@ typedef struct
 /* 实物R100对应100毫欧；不要写成100欧。 */
 #define INA226_SHUNT_MOHM  100u
 
-/* 16次平均，分流/总线各1.1ms，连续转换。 */
-#define INA226_CONFIG_VALUE  0x4527u
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -229,22 +228,10 @@ static volatile uint32_t bms_ntc_input_mv = 0u;
 static volatile uint8_t bms_ntc_read_ok = 0u;
 static volatile uint32_t bms_ntc_error_count = 0u;
 
-/* INA226身份检查结果，供Keil Watch观察。 */
-static volatile uint8_t bms_ina226_found = 0u;
-static volatile uint8_t bms_ina226_address7 = 0u;
-static volatile uint8_t bms_ina226_ack_count = 0u;
-static volatile uint16_t bms_ina226_manufacturer = 0u;
-static volatile uint16_t bms_ina226_die_id = 0u;
-
-/* INA226真实测量的调试值，本步暂不替换BMS里的模拟电流。 */
-static volatile uint8_t bms_ina226_configured = 0u;
-static volatile int32_t bms_ina226_result = -1;
-static volatile int32_t bms_ina226_shunt_raw = 0;
-static volatile int32_t bms_ina226_current_ma = 0;
-static volatile uint32_t bms_ina226_bus_mv = 0u;
-static volatile uint32_t bms_ina226_last_ms = 0u;
-static volatile uint32_t bms_ina226_read_count = 0u;
-static volatile uint32_t bms_ina226_error_count = 0u;
+/* 应用保留驱动结果和诊断副本，器件内部状态由ina226.c管理。 */
+static Ina226Sample bms_ina226_sample = {0};
+static Ina226Diagnostics bms_ina226_diag = {0};
+static Ina226Result bms_ina226_result = INA226_ERROR;
 
 /* 最新报告只留一份；普通命令仍使用原来的8项队列。 */
 static QueueHandle_t bms_telemetry_queue = NULL;
@@ -855,192 +842,25 @@ static void Bms_CanStatusPoll(
     can_report_requested = 0u;
 }
 
-/* 读一个16位寄存器：先收到高字节，再收到低字节。 */
-static uint8_t Bms_Ina226ReadReg16(
-    uint8_t address7, uint8_t reg, uint16_t *value)
-{
-    uint8_t data[2];
-
-    /* HAL要求把7位设备地址左移一位，读写方向由HAL处理。 */
-    if (HAL_I2C_Mem_Read(
-            &hi2c1, (uint16_t)(address7 << 1),
-            reg, I2C_MEMADD_SIZE_8BIT,
-            data, 2u, 5u) != HAL_OK)
-    {
-        return 0u;
-    }
-
-    /* 寄存器编号是1字节；寄存器内容是2字节。 */
-    *value = (uint16_t)(((uint16_t)data[0] << 8) | data[1]);
-    return 1u;
-}
-
-/* 只在业务任务启动时执行一次，寻找并核对INA226身份。 */
-static void Bms_Ina226Probe(void)
-{
-    uint8_t address7;
-    uint16_t manufacturer;
-    uint16_t die_id;
-
-    bms_ina226_found = 0u;
-    bms_ina226_address7 = 0u;
-    bms_ina226_ack_count = 0u;
-    bms_ina226_manufacturer = 0u;
-    bms_ina226_die_id = 0u;
-
-    /* INA226的合法7位地址为0x40到0x4F。 */
-    for (address7 = 0x40u; address7 <= 0x4Fu; ++address7)
-    {
-        if (HAL_I2C_IsDeviceReady(
-                &hi2c1, (uint16_t)(address7 << 1),
-                1u, 5u) != HAL_OK)
-        {
-            continue;
-        }
-
-        bms_ina226_ack_count++;
-
-        if ((Bms_Ina226ReadReg16(
-                address7, 0xFEu, &manufacturer) == 0u)
-            || (Bms_Ina226ReadReg16(
-                address7, 0xFFu, &die_id) == 0u))
-        {
-            continue;
-        }
-
-        bms_ina226_manufacturer = manufacturer;
-        bms_ina226_die_id = die_id;
-
-        /* 保留完整Die ID供观察，用高12位核对INA226型号。 */
-        if ((manufacturer == 0x5449u)
-            && ((die_id & 0xFFF0u) == 0x2260u))
-        {
-            bms_ina226_address7 = address7;
-            bms_ina226_found = 1u;
-            return;
-        }
-    }
-
-    /* 未找到时保留found=0，供排查；本步不停止原有BMS演示。 */
-}
-
-/* 写16位寄存器，同样先发送高字节。 */
-static uint8_t Bms_Ina226WriteReg16(uint8_t reg, uint16_t value)
-{
-    uint8_t data[2];
-
-    data[0] = (uint8_t)(value >> 8);
-    data[1] = (uint8_t)value;
-
-    return HAL_I2C_Mem_Write(
-        &hi2c1, (uint16_t)(bms_ina226_address7 << 1),
-        reg, I2C_MEMADD_SIZE_8BIT,
-        data, 2u, 5u) == HAL_OK;
-}
-
-/* 身份检查通过后配置一次，并读回确认写入成功。 */
-static uint8_t Bms_Ina226Configure(void)
-{
-    uint16_t config;
-
-    if (bms_ina226_found == 0u)
-    {
-        return 0u;
-    }
-
-    if ((Bms_Ina226WriteReg16(
-            0x00u, INA226_CONFIG_VALUE) == 0u)
-        || (Bms_Ina226ReadReg16(
-            bms_ina226_address7, 0x00u, &config) == 0u))
-    {
-        return 0u;
-    }
-
-    return config == INA226_CONFIG_VALUE;
-}
-
-/* 返回1：新数据；0：还没新数据；-1：读取或量程异常。 */
-static int32_t Bms_Ina226ReadSample(void)
-{
-    uint16_t status;
-    uint16_t shunt;
-    uint16_t bus;
-    int32_t raw;
-    int32_t numerator;
-    int32_t denominator;
-
-    if (bms_ina226_configured == 0u)
-    {
-        return -1;
-    }
-
-    /* 0x06的第3位表示转换完成；读取该寄存器会清除此标志。 */
-    if (Bms_Ina226ReadReg16(
-            bms_ina226_address7, 0x06u, &status) == 0u)
-    {
-        return -1;
-    }
-
-    if ((status & 0x0008u) == 0u)
-    {
-        return 0;
-    }
-
-    if ((Bms_Ina226ReadReg16(
-            bms_ina226_address7, 0x01u, &shunt) == 0u)
-        || (Bms_Ina226ReadReg16(
-            bms_ina226_address7, 0x02u, &bus) == 0u))
-    {
-        return -1;
-    }
-
-    /* 两个电流满量程端点保守判异常；总线电压检查0～36V范围。 */
-    if ((shunt == 0x7FFFu) || (shunt == 0x8000u) || (bus > 28800u))
-    {
-        return -1;
-    }
-
-    /* 分流电压是16位有符号数，显式处理负电流补码。 */
-    raw = (shunt & 0x8000u) != 0u
-        ? (int32_t)shunt - 65536 : (int32_t)shunt;
-
-    /* 每码2.5微伏：电流mA = raw × 5 / (2 × 分流电阻毫欧数)。 */
-    numerator = raw * 5;
-    denominator = (int32_t)INA226_SHUNT_MOHM * 2;
-
-    bms_ina226_shunt_raw = raw;
-    bms_ina226_current_ma = numerator >= 0
-        ? (numerator + denominator / 2) / denominator
-        : -((-numerator + denominator / 2) / denominator);
-
-    /* 总线电压每码1.25mV，取整保存为毫伏。 */
-    bms_ina226_bus_mv = ((uint32_t)bus * 5u + 2u) / 4u;
-
-    /* 只有完整取得新数据时，才刷新时间和成功计数。 */
-    bms_ina226_last_ms = HAL_GetTick();
-    bms_ina226_read_count++;
-    return 1;
-}
-
-/* 把INA226的新读数交给BMS；失败时不伪造零电流或刷新旧时间。 */
+/* 驱动只提供器件结果，应用层负责BMS来源、有效性和时效语义。 */
 static void Bms_UpdateCurrentMeasurement(BmsSample *sample)
 {
     sample->current_ma.source = BMS_SOURCE_EXTERNAL;
-    bms_ina226_result = Bms_Ina226ReadSample();
+    bms_ina226_result = Ina226_Read(&bms_ina226_sample);
+    Ina226_GetDiagnostics(&bms_ina226_diag);
 
-    if (bms_ina226_result == 1)
+    if (bms_ina226_result == INA226_NEW_DATA)
     {
-        sample->current_ma.value = bms_ina226_current_ma;
-        sample->current_ma.timestamp_ms = bms_ina226_last_ms;
+        sample->current_ma.value = bms_ina226_sample.current_ma;
+        sample->current_ma.timestamp_ms = bms_ina226_sample.timestamp_ms;
         sample->current_ma.valid = 1u;
     }
-    else if (bms_ina226_result < 0)
+    else if (bms_ina226_result == INA226_ERROR)
     {
         sample->current_ma.valid = 0u;
-        bms_ina226_error_count++;
     }
 
-    /* result为0时保留原记录，让已有的500ms超时检查发挥作用。 */
+    /* NO_DATA保留旧值、旧时间和原valid，由保护检查是否过期。 */
 }
 
 /* 在创建任务之前调用一次，三个队列分别承担不同职责。 */
@@ -1104,8 +924,9 @@ void Bms_RunSampleTask(void)
         Error_Handler();
     }
 
-    Bms_Ina226Probe();
-    bms_ina226_configured = Bms_Ina226Configure();
+    /* 初始化失败由后续无效采样触发保护，通信仍能报告问题。 */
+    (void)Ina226_Init(&hi2c1, INA226_SHUNT_MOHM);
+    Ina226_GetDiagnostics(&bms_ina226_diag);
 
     /* 首次也等待一个采集周期，让INA226完成转换。 */
     last_wake = xTaskGetTickCount();
@@ -1131,7 +952,7 @@ void Bms_RunSampleTask(void)
             Bms_UpdateCurrentMeasurement(&acquisition.sample);
 
             acquisition.ina_result = bms_ina226_result;
-            acquisition.bus_mv = bms_ina226_bus_mv;
+            acquisition.bus_mv = bms_ina226_sample.bus_mv;
 
             /* 这是发布次数，读取失败的无效快照也需要发布。 */
             acquisition.sample_count++;
