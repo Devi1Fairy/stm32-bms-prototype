@@ -18,6 +18,7 @@ struct BmsLogRecord
     qint64 currentValid = 0;
     qint64 currentAgeMs = 0;
     qint64 currentSource = 0;
+    qint64 clearAllowed = 0;
 };
 
 // 整行检查通过才更新result，失败时保留原对象。

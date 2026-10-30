@@ -4,6 +4,7 @@
 #include <QMessageBox>
 #include <QSerialPortInfo>
 #include <QTextCursor>
+#include <QStringList>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -36,6 +37,15 @@ MainWindow::MainWindow(QWidget *parent)
             this, &MainWindow::checkReportTimeout);
 
     m_reportTimer.start(200);
+
+    connect(ui->startButton, &QPushButton::clicked, this,
+            [this]() { sendCommand(BmsCommand::Start); });
+
+    connect(ui->stopButton, &QPushButton::clicked, this,
+            [this]() { sendCommand(BmsCommand::Stop); });
+
+    connect(ui->clearFaultButton, &QPushButton::clicked, this,
+            [this]() { sendCommand(BmsCommand::Clear); });
 
     refreshPorts();
     updateConnectionUi();
@@ -130,10 +140,93 @@ void MainWindow::readSerialData()
 
         if (ParseBmsLog(line, record))
         {
+            m_latestReport = record;
+            m_haveReport = true;
             m_lastReport.start();
+
             showTelemetry(record);
+            checkCommandResult(record);
+            updateCommandButtons();
         }
     }
+}
+
+bool MainWindow::hasFreshReport() const
+{
+    return m_haveReport && m_lastReport.isValid()
+    && m_lastReport.elapsed() < 1000;
+}
+
+void MainWindow::updateCommandButtons()
+{
+    const bool connected = m_serial.isOpen();
+    const bool fresh = hasFreshReport();
+    const bool pending = m_pendingCommand != BmsCommand::None;
+
+    ui->startButton->setEnabled(BmsCommandAllowed(
+        BmsCommand::Start, connected, fresh, pending, m_latestReport));
+
+    ui->stopButton->setEnabled(BmsCommandAllowed(
+        BmsCommand::Stop, connected, fresh, pending, m_latestReport));
+
+    ui->clearFaultButton->setEnabled(BmsCommandAllowed(
+        BmsCommand::Clear, connected, fresh, pending, m_latestReport));
+}
+
+void MainWindow::sendCommand(BmsCommand command)
+{
+    // 点击时再检查一次，避免按钮显示后数据已经过期。
+    if (!BmsCommandAllowed(command, m_serial.isOpen(), hasFreshReport(),
+                           m_pendingCommand != BmsCommand::None,
+                           m_latestReport))
+    {
+        ui->commandLabel->setText(
+            QStringLiteral("当前条件不允许此命令。"));
+        return;
+    }
+
+    // 只发送一个字符，不附加回车换行。
+    const QByteArray data(1, static_cast<char>(command));
+
+    if (m_serial.write(data) != data.size())
+    {
+        m_pendingCommand = BmsCommand::None;
+        m_commandWait.invalidate();
+
+        ui->commandLabel->setText(
+            QStringLiteral("串口写入失败，结果未确认。"));
+
+        updateCommandButtons();
+        return;
+    }
+
+    // write接收了字节，接下来等待上报。
+    // 停止请求可以覆盖之前正在等待的其他命令。
+    m_pendingCommand = command;
+    m_commandWait.start();
+
+    ui->commandLabel->setText(
+        QStringLiteral("已交给串口：%1，等待MCU上报。")
+            .arg(QChar::fromLatin1(static_cast<char>(command))));
+
+    updateCommandButtons();
+}
+
+void MainWindow::checkCommandResult(const BmsLogRecord &record)
+{
+    if (m_pendingCommand == BmsCommand::None
+        || !BmsCommandTargetObserved(m_pendingCommand, record))
+    {
+        return;
+    }
+
+    ui->commandLabel->setText(
+        QStringLiteral("已观察到目标状态（命令 %1）。")
+            .arg(QChar::fromLatin1(
+                static_cast<char>(m_pendingCommand))));
+
+    m_pendingCommand = BmsCommand::None;
+    m_commandWait.invalidate();
 }
 
 void MainWindow::showTelemetry(const BmsLogRecord &record)
@@ -187,17 +280,39 @@ void MainWindow::showTelemetry(const BmsLogRecord &record)
 
 void MainWindow::checkReportTimeout()
 {
-    if (m_serial.isOpen()
-        && m_lastReport.isValid()
+    if (m_serial.isOpen() && m_lastReport.isValid()
         && m_lastReport.elapsed() >= 1000)
     {
         ui->telemetryLabel->setText(
             QStringLiteral(
                 "数据过期：超过1秒没有收到可解析的完整上报。"));
 
-        // 提示一次即可，下次成功解析时重新开始计时。
         m_lastReport.invalidate();
+        m_haveReport = false;
+
+        if (m_pendingCommand != BmsCommand::None)
+        {
+            ui->commandLabel->setText(
+                QStringLiteral("上报已过期，命令结果未确认。"));
+
+            m_pendingCommand = BmsCommand::None;
+            m_commandWait.invalidate();
+        }
     }
+
+    if (m_pendingCommand != BmsCommand::None
+        && m_commandWait.isValid()
+        && m_commandWait.elapsed() >= 2000)
+    {
+        ui->commandLabel->setText(
+            QStringLiteral(
+                "2秒内未观察到目标状态，命令结果未确认。"));
+
+        m_pendingCommand = BmsCommand::None;
+        m_commandWait.invalidate();
+    }
+
+    updateCommandButtons();
 }
 
 void MainWindow::handleSerialError(
@@ -223,9 +338,15 @@ void MainWindow::handleSerialError(
 void MainWindow::updateConnectionUi()
 {
     const bool connected = m_serial.isOpen();
+    const bool hadPending = m_pendingCommand != BmsCommand::None;
 
-    // 新会话不能拼接上一次连接留下的半行。
+    // 连接变化后，旧报告和旧等待状态不进入新会话。
     m_lineBuffer.reset();
+    m_haveReport = false;
+    m_latestReport = BmsLogRecord{};
+    m_pendingCommand = BmsCommand::None;
+
+    m_commandWait.invalidate();
     m_lastReport.invalidate();
 
     if (connected)
@@ -237,20 +358,21 @@ void MainWindow::updateConnectionUi()
                                     ? QStringLiteral("等待完整BMS上报……")
                                     : QStringLiteral("未连接"));
 
+    ui->commandLabel->setText(hadPending
+                                  ? QStringLiteral("连接状态改变，上一命令结果未确认。")
+                                  : (connected
+                                         ? QStringLiteral("等待指令。")
+                                         : QStringLiteral("未连接")));
+
     ui->connectButton->setText(
         connected ? "Disconnect" : "Connect");
 
-    // 连接期间固定端口选择。
     ui->portCombo->setEnabled(!connected);
     ui->refreshButton->setEnabled(!connected);
 
-    if (connected)
-    {
-        ui->statusLabel->setText(
-            m_serial.portName() + " 115200 8N1");
-    }
-    else
-    {
-        ui->statusLabel->setText("Disconnected");
-    }
+    ui->statusLabel->setText(connected
+                                 ? m_serial.portName() + " 115200 8N1"
+                                 : QStringLiteral("Disconnected"));
+
+    updateCommandButtons();
 }

@@ -6,6 +6,7 @@
 #include <QElapsedTimer>
 #include <QTimer>
 #include "bms_log_parser.h"
+#include "bms_commands.h"
 
 QT_BEGIN_NAMESPACE
 namespace Ui {
@@ -30,8 +31,17 @@ private:
     void updateConnectionUi();
     void showTelemetry(const BmsLogRecord &record);
     void checkReportTimeout();
-    Ui::MainWindow *ui;
+    bool hasFreshReport() const;
+    void updateCommandButtons();
+    void sendCommand(BmsCommand command);
+    void checkCommandResult(const BmsLogRecord &record);
 
+    BmsLogRecord m_latestReport;
+    bool m_haveReport = false;
+    BmsCommand m_pendingCommand = BmsCommand::None;
+    QElapsedTimer m_commandWait;
+
+    Ui::MainWindow *ui;
     // 串口属于这个窗口，关闭窗口时会自动析构。
     QSerialPort m_serial;
     BmsLineBuffer m_lineBuffer;

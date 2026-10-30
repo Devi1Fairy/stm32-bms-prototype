@@ -53,6 +53,7 @@ bool ParseBmsLog(const QByteArray &line, BmsLogRecord &result)
     BmsLogRecord next;
     next.state = read("state");
     next.load = read("load");
+    next.clearAllowed = read("clear");
     next.activeFaults = read("faults", 0);
     next.latchedFaults = read("latched", 0);
     next.cellMv = read("cell0_mv");
@@ -77,7 +78,8 @@ bool ParseBmsLog(const QByteArray &line, BmsLogRecord &result)
         || next.cellMv < 0 || next.cellMv > maxSigned
         || next.temperatureDc < minSigned
         || next.temperatureDc > maxSigned
-        || next.currentMa < minSigned || next.currentMa > maxSigned)
+        || next.currentMa < minSigned || next.currentMa > maxSigned
+        || next.clearAllowed < 0 || next.clearAllowed > 1)
     {
         return false;
     }
