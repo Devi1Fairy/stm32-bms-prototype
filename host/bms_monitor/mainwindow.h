@@ -3,6 +3,9 @@
 
 #include <QMainWindow>
 #include <QSerialPort>
+#include <QElapsedTimer>
+#include <QTimer>
+#include "bms_log_parser.h"
 
 QT_BEGIN_NAMESPACE
 namespace Ui {
@@ -25,11 +28,15 @@ private:
     void readSerialData();
     void handleSerialError(QSerialPort::SerialPortError error);
     void updateConnectionUi();
-
+    void showTelemetry(const BmsLogRecord &record);
+    void checkReportTimeout();
     Ui::MainWindow *ui;
 
     // 串口属于这个窗口，关闭窗口时会自动析构。
     QSerialPort m_serial;
+    BmsLineBuffer m_lineBuffer;
+    QElapsedTimer m_lastReport;
+    QTimer m_reportTimer;
 };
 
 #endif // MAINWINDOW_H

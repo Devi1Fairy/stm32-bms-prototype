@@ -44,6 +44,13 @@
      </layout>
     </item>
     <item>
+     <widget class="QLabel" name="telemetryLabel">
+      <property name="text">
+       <string>等待数据</string>
+      </property>
+     </widget>
+    </item>
+    <item>
      <widget class="QPlainTextEdit" name="rxText"/>
     </item>
    </layout>

@@ -11,7 +11,11 @@ qt_add_executable(qt_smoke
     mainwindow.cpp
     mainwindow.h
     mainwindow.ui
+    bms_log_parser.h
+    bms_log_parser.cpp
 )
+
+target_compile_features(qt_smoke PRIVATE cxx_std_17)
 
 target_link_libraries(qt_smoke
     PRIVATE

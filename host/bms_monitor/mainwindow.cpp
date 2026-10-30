@@ -32,6 +32,11 @@ MainWindow::MainWindow(QWidget *parent)
     connect(&m_serial, &QSerialPort::errorOccurred,
             this, &MainWindow::handleSerialError);
 
+    connect(&m_reportTimer, &QTimer::timeout,
+            this, &MainWindow::checkReportTimeout);
+
+    m_reportTimer.start(200);
+
     refreshPorts();
     updateConnectionUi();
 }
@@ -114,16 +119,85 @@ void MainWindow::toggleConnection()
 
 void MainWindow::readSerialData()
 {
-    const QByteArray data = m_serial.readAll();
+    const auto lines = m_lineBuffer.append(m_serial.readAll());
 
-    // MCU当前输出ASCII日志，收到多少就显示多少。
-    // 一次readyRead可能只有半行，也可能包含好几行。
-    QTextCursor cursor = ui->rxText->textCursor();
-    cursor.movePosition(QTextCursor::End);
-    cursor.insertText(QString::fromLatin1(data));
+    for (const QByteArray &line : lines)
+    {
+        // 现在按完整行显示日志。
+        ui->rxText->appendPlainText(QString::fromLatin1(line));
 
-    ui->rxText->setTextCursor(cursor);
-    ui->rxText->ensureCursorVisible();
+        BmsLogRecord record;
+
+        if (ParseBmsLog(line, record))
+        {
+            m_lastReport.start();
+            showTelemetry(record);
+        }
+    }
+}
+
+void MainWindow::showTelemetry(const BmsLogRecord &record)
+{
+    static const QStringList stateNames = {
+        QStringLiteral("自检"),
+        QStringLiteral("待机"),
+        QStringLiteral("运行"),
+        QStringLiteral("故障锁定")
+    };
+
+    // 当前UART没有电压、温度各自的有效位。
+    // 自检或存在采样异常时，先保守隐藏这两项。
+    const bool samplingOk = record.state != 0
+                            && (record.activeFaults & 0xE0) == 0;
+
+    const QString cell = samplingOk
+                             ? QString::number(record.cellMv / 1000.0, 'f', 3)
+                             : QStringLiteral("--");
+
+    const QString temperature = samplingOk
+                                    ? QString::number(record.temperatureDc / 10.0, 'f', 1)
+                                    : QStringLiteral("--");
+
+    // 有效标志、采样年龄、来源都符合条件，才显示实采电流。
+    const bool currentOk = record.currentValid == 1
+                           && record.currentAgeMs < 500
+                           && record.currentSource == 3;
+
+    const QString current = currentOk
+                                ? QString::number(record.currentMa)
+                                : QStringLiteral("--（无有效实采）");
+
+    ui->telemetryLabel->setText(
+        QStringLiteral(
+            "数据：已收到完整上报\n"
+            "模拟单体电压：%1 V    NTC估算：%2 ℃\n"
+            "INA226电流：%3 mA\n"
+            "状态：%4    负载许可：%5\n"
+            "当前故障：0x%6    锁存故障：0x%7")
+            .arg(cell)
+            .arg(temperature)
+            .arg(current)
+            .arg(stateNames.at(static_cast<qsizetype>(record.state)))
+            .arg(record.load == 1
+                     ? QStringLiteral("开启")
+                     : QStringLiteral("关闭"))
+            .arg(record.activeFaults, 8, 16, QLatin1Char('0'))
+            .arg(record.latchedFaults, 8, 16, QLatin1Char('0')));
+}
+
+void MainWindow::checkReportTimeout()
+{
+    if (m_serial.isOpen()
+        && m_lastReport.isValid()
+        && m_lastReport.elapsed() >= 1000)
+    {
+        ui->telemetryLabel->setText(
+            QStringLiteral(
+                "数据过期：超过1秒没有收到可解析的完整上报。"));
+
+        // 提示一次即可，下次成功解析时重新开始计时。
+        m_lastReport.invalidate();
+    }
 }
 
 void MainWindow::handleSerialError(
@@ -149,6 +223,19 @@ void MainWindow::handleSerialError(
 void MainWindow::updateConnectionUi()
 {
     const bool connected = m_serial.isOpen();
+
+    // 新会话不能拼接上一次连接留下的半行。
+    m_lineBuffer.reset();
+    m_lastReport.invalidate();
+
+    if (connected)
+    {
+        m_lastReport.start();
+    }
+
+    ui->telemetryLabel->setText(connected
+                                    ? QStringLiteral("等待完整BMS上报……")
+                                    : QStringLiteral("未连接"));
 
     ui->connectButton->setText(
         connected ? "Disconnect" : "Connect");
