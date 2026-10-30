@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.19)
 project(qt_smoke LANGUAGES CXX)
 
-find_package(Qt6 6.5 REQUIRED COMPONENTS Core Widgets)
+find_package(Qt6 6.9 REQUIRED COMPONENTS Core Widgets SerialPort)
 
 qt_standard_project_setup()
 
@@ -17,6 +17,7 @@ target_link_libraries(qt_smoke
     PRIVATE
         Qt::Core
         Qt::Widgets
+        Qt::SerialPort
 )
 
 install(TARGETS qt_smoke
