@@ -5,6 +5,10 @@
 #include <QSerialPortInfo>
 #include <QTextCursor>
 #include <QStringList>
+#include <QFileDialog>
+#include <QDateTime>
+#include <QDir>
+#include <QStandardPaths>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -46,6 +50,9 @@ MainWindow::MainWindow(QWidget *parent)
 
     connect(ui->clearFaultButton, &QPushButton::clicked, this,
             [this]() { sendCommand(BmsCommand::Clear); });
+
+    connect(ui->recordButton, &QPushButton::clicked,
+            this, &MainWindow::toggleRecording);
 
     refreshPorts();
     updateConnectionUi();
@@ -147,6 +154,7 @@ void MainWindow::readSerialData()
             showTelemetry(record);
             checkCommandResult(record);
             updateCommandButtons();
+            appendRecording(record);
         }
     }
 }
@@ -375,4 +383,135 @@ void MainWindow::updateConnectionUi()
                                  : QStringLiteral("Disconnected"));
 
     updateCommandButtons();
+
+    if (!connected)
+    {
+        stopRecording();
+    }
+
+    updateRecordingUi();
+}
+
+void MainWindow::toggleRecording()
+{
+    if (m_csvLogger.isRecording())
+    {
+        stopRecording();
+        return;
+    }
+
+    if (!m_serial.isOpen())
+    {
+        ui->recordLabel->setText(QStringLiteral("请先连接串口。"));
+        return;
+    }
+
+    QString directory =
+        QStandardPaths::writableLocation(
+            QStandardPaths::DocumentsLocation);
+
+    if (directory.isEmpty())
+    {
+        directory = QDir::homePath();
+    }
+
+    const QString suggestedName =
+        "bms_" + QDateTime::currentDateTime()
+                     .toString("yyyyMMdd_HHmmss_zzz")
+        + ".csv";
+
+    QString fileName = QFileDialog::getSaveFileName(
+        this,
+        QStringLiteral("新建CSV记录"),
+        QDir(directory).filePath(suggestedName),
+        QStringLiteral("CSV files (*.csv)"),
+        nullptr,
+        QFileDialog::DontUseNativeDialog
+            | QFileDialog::DontConfirmOverwrite);
+
+    if (fileName.isEmpty())
+    {
+        return;
+    }
+
+    // 选文件期间也可能拔掉串口，返回后再检查。
+    if (!m_serial.isOpen())
+    {
+        ui->recordLabel->setText(
+            QStringLiteral("连接已结束，未开始记录。"));
+        return;
+    }
+
+    if (!fileName.endsWith(".csv", Qt::CaseInsensitive))
+    {
+        fileName += ".csv";
+    }
+
+    if (!m_csvLogger.start(fileName))
+    {
+        ui->recordLabel->setText(
+            QStringLiteral("无法开始记录：%1")
+                .arg(m_csvLogger.errorString()));
+
+        updateRecordingUi();
+        return;
+    }
+
+    ui->recordLabel->setToolTip(fileName);
+    ui->recordLabel->setText(
+        QStringLiteral("记录中：0 行，等待上报。"));
+
+    updateRecordingUi();
+}
+
+void MainWindow::appendRecording(const BmsLogRecord &record)
+{
+    if (!m_csvLogger.isRecording())
+    {
+        return;
+    }
+
+    if (!m_csvLogger.append(record))
+    {
+        ui->recordLabel->setText(
+            QStringLiteral("记录已停止：%1")
+                .arg(m_csvLogger.errorString()));
+
+        updateRecordingUi();
+        return;
+    }
+
+    ui->recordLabel->setText(
+        QStringLiteral("记录中：%1 行")
+            .arg(m_csvLogger.rowCount()));
+}
+
+void MainWindow::stopRecording()
+{
+    if (!m_csvLogger.isRecording())
+    {
+        return;
+    }
+
+    const bool ok = m_csvLogger.stop();
+
+    ui->recordLabel->setText(ok
+                                 ? QStringLiteral("已保存：%1 行")
+                                       .arg(m_csvLogger.rowCount())
+                                 : QStringLiteral("保存失败：%1")
+                                       .arg(m_csvLogger.errorString()));
+
+    updateRecordingUi();
+}
+
+void MainWindow::updateRecordingUi()
+{
+    const bool recording = m_csvLogger.isRecording();
+
+    ui->recordButton->setText(recording
+                                  ? QStringLiteral("停止记录 CSV")
+                                  : QStringLiteral("开始记录 CSV"));
+
+    ui->recordButton->setEnabled(
+        recording || m_serial.isOpen());
 }

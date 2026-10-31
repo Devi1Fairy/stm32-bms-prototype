@@ -7,6 +7,7 @@
 #include <QTimer>
 #include "bms_log_parser.h"
 #include "bms_commands.h"
+#include "bms_csv_logger.h"
 
 QT_BEGIN_NAMESPACE
 namespace Ui {
@@ -35,12 +36,16 @@ private:
     void updateCommandButtons();
     void sendCommand(BmsCommand command);
     void checkCommandResult(const BmsLogRecord &record);
+    void toggleRecording();
+    void appendRecording(const BmsLogRecord &record);
+    void stopRecording();
+    void updateRecordingUi();
 
+    BmsCsvLogger m_csvLogger;
     BmsLogRecord m_latestReport;
     bool m_haveReport = false;
     BmsCommand m_pendingCommand = BmsCommand::None;
     QElapsedTimer m_commandWait;
-
     Ui::MainWindow *ui;
     // 串口属于这个窗口，关闭窗口时会自动析构。
     QSerialPort m_serial;

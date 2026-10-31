@@ -13,9 +13,10 @@ qt_add_executable(qt_smoke
     mainwindow.ui
     bms_log_parser.h
     bms_log_parser.cpp
-    bms_commands.h bms_commands.cpp
     bms_commands.h
     bms_commands.cpp
+    bms_csv_logger.h
+    bms_csv_logger.cpp
 )
 
 target_compile_features(qt_smoke PRIVATE cxx_std_17)
