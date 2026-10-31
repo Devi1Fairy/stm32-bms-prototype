@@ -17,7 +17,11 @@ qt_add_executable(qt_smoke
     bms_commands.cpp
     bms_csv_logger.h
     bms_csv_logger.cpp
+    bms_trend_widget.h bms_trend_widget.cpp
+    bms_trend_widget.h
+    bms_trend_widget.cpp
 )
+target_include_directories(qt_smoke PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 target_compile_features(qt_smoke PRIVATE cxx_std_17)
 

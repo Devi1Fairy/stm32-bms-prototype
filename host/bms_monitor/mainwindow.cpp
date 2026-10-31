@@ -54,6 +54,15 @@ MainWindow::MainWindow(QWidget *parent)
     connect(ui->recordButton, &QPushButton::clicked,
             this, &MainWindow::toggleRecording);
 
+    ui->trendCombo->addItems({
+        QStringLiteral("模拟单体电压 / V"),
+        QStringLiteral("NTC估算温度 / ℃"),
+        QStringLiteral("INA226电流 / mA")
+    });
+
+    connect(ui->trendCombo, &QComboBox::currentIndexChanged,
+            ui->trendWidget, &BmsTrendWidget::setChannel);
+
     refreshPorts();
     updateConnectionUi();
 }
@@ -155,6 +164,8 @@ void MainWindow::readSerialData()
             checkCommandResult(record);
             updateCommandButtons();
             appendRecording(record);
+
+            ui->trendWidget->addRecord(record);
         }
     }
 }
@@ -346,6 +357,7 @@ void MainWindow::handleSerialError(
 void MainWindow::updateConnectionUi()
 {
     const bool connected = m_serial.isOpen();
+    ui->trendWidget->reset();
     const bool hadPending = m_pendingCommand != BmsCommand::None;
 
     // 连接变化后，旧报告和旧等待状态不进入新会话。
