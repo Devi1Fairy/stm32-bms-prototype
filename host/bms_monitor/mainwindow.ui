@@ -16,24 +16,69 @@
   <widget class="QWidget" name="centralwidget">
    <layout class="QVBoxLayout" name="verticalLayout">
     <item>
+     <widget class="QTabWidget" name="connectionTabs">
+      <property name="currentIndex">
+       <number>1</number>
+      </property>
+      <widget class="QWidget" name="serialPage">
+       <property name="accessibleName">
+        <string/>
+       </property>
+       <attribute name="title">
+        <string>串口</string>
+       </attribute>
+       <layout class="QHBoxLayout" name="horizontalLayout_4">
+        <item>
+         <widget class="QComboBox" name="portCombo"/>
+        </item>
+        <item>
+         <widget class="QPushButton" name="connectButton">
+          <property name="text">
+           <string>Connect</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QPushButton" name="refreshButton">
+          <property name="text">
+           <string>Refresh</string>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </widget>
+      <widget class="QWidget" name="tcpPage">
+       <attribute name="title">
+        <string>网络</string>
+       </attribute>
+       <layout class="QHBoxLayout" name="horizontalLayout_5">
+        <item>
+         <widget class="QLineEdit" name="tcpHostEdit">
+          <property name="placeholderText">
+           <string>网关IPv4地址</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QLineEdit" name="tcpPortEdit">
+          <property name="placeholderText">
+           <string>LISTEN端口</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QPushButton" name="tcpConnectButton">
+          <property name="text">
+           <string>连接TCP</string>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </widget>
+     </widget>
+    </item>
+    <item>
      <layout class="QHBoxLayout" name="horizontalLayout">
-      <item>
-       <widget class="QComboBox" name="portCombo"/>
-      </item>
-      <item>
-       <widget class="QPushButton" name="connectButton">
-        <property name="text">
-         <string>Connect</string>
-        </property>
-       </widget>
-      </item>
-      <item>
-       <widget class="QPushButton" name="refreshButton">
-        <property name="text">
-         <string>Refresh</string>
-        </property>
-       </widget>
-      </item>
       <item>
        <widget class="QLabel" name="statusLabel">
         <property name="text">
@@ -120,7 +165,7 @@
       </property>
       <widget class="QWidget" name="widget">
        <attribute name="title">
-        <string>Tab 1</string>
+        <string>趋势图</string>
        </attribute>
        <layout class="QVBoxLayout" name="verticalLayout_2">
         <item>
@@ -133,7 +178,7 @@
       </widget>
       <widget class="QWidget" name="tab_2">
        <attribute name="title">
-        <string>Tab 2</string>
+        <string>日志</string>
        </attribute>
        <layout class="QVBoxLayout" name="verticalLayout_3">
         <item>

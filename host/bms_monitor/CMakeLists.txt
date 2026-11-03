@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.19)
 project(qt_smoke LANGUAGES CXX)
 
-find_package(Qt6 6.9 REQUIRED COMPONENTS Core Widgets SerialPort)
+find_package(Qt6 6.9 REQUIRED COMPONENTS Core Widgets SerialPort Network)
 
 qt_standard_project_setup()
 
@@ -17,7 +17,6 @@ qt_add_executable(qt_smoke
     bms_commands.cpp
     bms_csv_logger.h
     bms_csv_logger.cpp
-    bms_trend_widget.h bms_trend_widget.cpp
     bms_trend_widget.h
     bms_trend_widget.cpp
 )
@@ -30,6 +29,7 @@ target_link_libraries(qt_smoke
         Qt::Core
         Qt::Widgets
         Qt::SerialPort
+        Qt::Network
 )
 
 install(TARGETS qt_smoke

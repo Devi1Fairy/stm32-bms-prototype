@@ -9,6 +9,8 @@
 #include <QDateTime>
 #include <QDir>
 #include <QStandardPaths>
+#include <QHostAddress>
+#include <QNetworkProxy>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -63,13 +65,75 @@ MainWindow::MainWindow(QWidget *parent)
     connect(ui->trendCombo, &QComboBox::currentIndexChanged,
             ui->trendWidget, &BmsTrendWidget::setChannel);
 
+    // TCP只接收遥测，不发送初始化或控制指令。
+    m_tcp.setReadBufferSize(4096);
+
+    // 局域网网关使用直连，不经过系统代理。
+    m_tcp.setProxy(QNetworkProxy::NoProxy);
+
+    // 限制连接等待时间，避免一直停在“连接中”。
+    m_tcpConnectTimer.setSingleShot(true);
+    m_tcpConnectTimer.setInterval(5000);
+
+    connect(ui->tcpConnectButton, &QPushButton::clicked,
+            this, &MainWindow::toggleTcpConnection);
+
+    connect(&m_tcp, &QTcpSocket::readyRead,
+            this, &MainWindow::readTcpData);
+
+    connect(&m_tcp, &QTcpSocket::errorOccurred,
+            this, &MainWindow::handleTcpError);
+
+    // 中间状态只刷新控件，不清空历史。
+    connect(&m_tcp, &QTcpSocket::stateChanged, this,
+            [this](QAbstractSocket::SocketState)
+            {
+                updateConnectionControls();
+            });
+
+    connect(&m_tcp, &QTcpSocket::connected, this, [this]()
+            {
+                m_tcpConnectTimer.stop();
+                updateConnectionUi();
+            });
+
+    connect(&m_tcp, &QTcpSocket::disconnected, this, [this]()
+            {
+                m_tcpConnectTimer.stop();
+
+                // 先处理已经收到的数据，再结束当前会话。
+                if (m_tcp.bytesAvailable() > 0)
+                    readTcpData();
+
+                updateConnectionUi();
+            });
+
+    connect(&m_tcpConnectTimer, &QTimer::timeout, this, [this]()
+            {
+                if (m_tcp.state() == QAbstractSocket::UnconnectedState
+                    || m_tcp.state() == QAbstractSocket::ConnectedState)
+                    return;
+
+                m_tcp.abort();
+                updateConnectionUi();
+
+                ui->rxText->appendPlainText(
+                    QStringLiteral("[TCP] 5秒内未建立连接，已取消。"));
+            });
+
     refreshPorts();
     updateConnectionUi();
 }
 
 MainWindow::~MainWindow()
 {
-    // 退出时释放串口，其他程序才可以重新使用它。
+    m_reportTimer.stop();
+    m_tcpConnectTimer.stop();
+
+    // 关闭socket时不再调用窗口回调。
+    QObject::disconnect(&m_tcp, nullptr, this, nullptr);
+    m_tcp.abort();
+
     m_serial.close();
     delete ui;
 }
@@ -111,6 +175,13 @@ void MainWindow::toggleConnection()
         return;
     }
 
+    if (m_tcp.state() != QAbstractSocket::UnconnectedState)
+    {
+        ui->rxText->appendPlainText(
+            QStringLiteral("[Serial] 请先断开或取消TCP连接。"));
+        return;
+    }
+
     const QString portName =
         ui->portCombo->currentData().toString();
 
@@ -145,28 +216,32 @@ void MainWindow::toggleConnection()
 
 void MainWindow::readSerialData()
 {
-    const auto lines = m_lineBuffer.append(m_serial.readAll());
+    processIncomingData(m_serial.readAll());
+}
+
+void MainWindow::processIncomingData(const QByteArray &data)
+{
+    const auto lines = m_lineBuffer.append(data);
 
     for (const QByteArray &line : lines)
     {
-        // 现在按完整行显示日志。
         ui->rxText->appendPlainText(QString::fromLatin1(line));
 
         BmsLogRecord record;
 
-        if (ParseBmsLog(line, record))
-        {
-            m_latestReport = record;
-            m_haveReport = true;
-            m_lastReport.start();
+        if (!ParseBmsLog(line, record))
+            continue;
 
-            showTelemetry(record);
-            checkCommandResult(record);
-            updateCommandButtons();
-            appendRecording(record);
+        // 只有完整且校验通过的报告，才刷新在线状态。
+        m_latestReport = record;
+        m_haveReport = true;
+        m_lastReport.start();
 
-            ui->trendWidget->addRecord(record);
-        }
+        showTelemetry(record);
+        checkCommandResult(record);
+        updateCommandButtons();
+        appendRecording(record);
+        ui->trendWidget->addRecord(record);
     }
 }
 
@@ -299,7 +374,7 @@ void MainWindow::showTelemetry(const BmsLogRecord &record)
 
 void MainWindow::checkReportTimeout()
 {
-    if (m_serial.isOpen() && m_lastReport.isValid()
+    if (isTransportConnected() && m_lastReport.isValid()
         && m_lastReport.elapsed() >= 1000)
     {
         ui->telemetryLabel->setText(
@@ -356,52 +431,50 @@ void MainWindow::handleSerialError(
 
 void MainWindow::updateConnectionUi()
 {
-    const bool connected = m_serial.isOpen();
-    ui->trendWidget->reset();
-    const bool hadPending = m_pendingCommand != BmsCommand::None;
+    const bool connected = isTransportConnected();
+    const bool hadPending =
+        m_pendingCommand != BmsCommand::None;
 
-    // 连接变化后，旧报告和旧等待状态不进入新会话。
+    ++m_connectionEpoch;
+
     m_lineBuffer.reset();
+    ui->trendWidget->reset();
     m_haveReport = false;
     m_latestReport = BmsLogRecord{};
     m_pendingCommand = BmsCommand::None;
-
     m_commandWait.invalidate();
     m_lastReport.invalidate();
 
     if (connected)
-    {
         m_lastReport.start();
+
+    ui->telemetryLabel->setText(
+        connected
+            ? QStringLiteral("等待完整BMS上报……")
+            : QStringLiteral("未连接"));
+
+    if (hadPending)
+    {
+        ui->commandLabel->setText(
+            QStringLiteral("连接状态改变，上一命令结果未确认。"));
     }
-
-    ui->telemetryLabel->setText(connected
-                                    ? QStringLiteral("等待完整BMS上报……")
-                                    : QStringLiteral("未连接"));
-
-    ui->commandLabel->setText(hadPending
-                                  ? QStringLiteral("连接状态改变，上一命令结果未确认。")
-                                  : (connected
-                                         ? QStringLiteral("等待指令。")
-                                         : QStringLiteral("未连接")));
-
-    ui->connectButton->setText(
-        connected ? "Disconnect" : "Connect");
-
-    ui->portCombo->setEnabled(!connected);
-    ui->refreshButton->setEnabled(!connected);
-
-    ui->statusLabel->setText(connected
-                                 ? m_serial.portName() + " 115200 8N1"
-                                 : QStringLiteral("Disconnected"));
-
-    updateCommandButtons();
+    else if (m_tcp.state() != QAbstractSocket::UnconnectedState)
+    {
+        ui->commandLabel->setText(
+            QStringLiteral("TCP仅接收遥测，网关暂不支持控制。"));
+    }
+    else
+    {
+        ui->commandLabel->setText(
+            connected
+                ? QStringLiteral("等待指令。")
+                : QStringLiteral("未连接"));
+    }
 
     if (!connected)
-    {
         stopRecording();
-    }
 
-    updateRecordingUi();
+    updateConnectionControls();
 }
 
 void MainWindow::toggleRecording()
@@ -412,11 +485,13 @@ void MainWindow::toggleRecording()
         return;
     }
 
-    if (!m_serial.isOpen())
+    if (!isTransportConnected())
     {
-        ui->recordLabel->setText(QStringLiteral("请先连接串口。"));
+        ui->recordLabel->setText(QStringLiteral("请先连接串口或TCP。"));
         return;
     }
+
+    const quint64 epoch = m_connectionEpoch;
 
     QString directory =
         QStandardPaths::writableLocation(
@@ -446,8 +521,8 @@ void MainWindow::toggleRecording()
         return;
     }
 
-    // 选文件期间也可能拔掉串口，返回后再检查。
-    if (!m_serial.isOpen())
+    // 选文件期间连接可能变化，旧操作不能用于新会话。
+    if (!isTransportConnected() || epoch != m_connectionEpoch)
     {
         ui->recordLabel->setText(
             QStringLiteral("连接已结束，未开始记录。"));
@@ -525,5 +600,132 @@ void MainWindow::updateRecordingUi()
                                   : QStringLiteral("开始记录 CSV"));
 
     ui->recordButton->setEnabled(
-        recording || m_serial.isOpen());
+        recording || isTransportConnected());
+}
+
+bool MainWindow::isTransportConnected() const
+{
+    return m_serial.isOpen()
+    || m_tcp.state() == QAbstractSocket::ConnectedState;
+}
+
+void MainWindow::toggleTcpConnection()
+{
+    if (m_serial.isOpen())
+    {
+        ui->rxText->appendPlainText(
+            QStringLiteral("[TCP] 请先断开串口连接。"));
+        return;
+    }
+
+    // 已连接时断开；正在连接时取消。
+    if (m_tcp.state() != QAbstractSocket::UnconnectedState)
+    {
+        m_tcpConnectTimer.stop();
+        m_tcp.abort();
+        updateConnectionUi();
+        return;
+    }
+
+    QHostAddress address;
+    bool portOk = false;
+    const uint port =
+        ui->tcpPortEdit->text().trimmed().toUInt(&portOk);
+
+    if (!address.setAddress(ui->tcpHostEdit->text().trimmed())
+        || address.protocol() != QAbstractSocket::IPv4Protocol
+        || !portOk || port == 0 || port > 65535)
+    {
+        ui->rxText->appendPlainText(
+            QStringLiteral("[TCP] 请填写有效IPv4地址和1～65535端口。"));
+        return;
+    }
+
+    // 手动开始新会话，清理旧数据。
+    updateConnectionUi();
+
+    ui->rxText->appendPlainText(
+        QStringLiteral("[TCP] 尝试连接 %1:%2")
+            .arg(address.toString())
+            .arg(port));
+
+    m_tcpConnectTimer.start();
+    m_tcp.connectToHost(address, static_cast<quint16>(port));
+
+    updateConnectionControls();
+}
+
+void MainWindow::readTcpData()
+{
+    const QByteArray data = m_tcp.readAll();
+
+    if (!m_serial.isOpen())
+        processIncomingData(data);
+}
+
+void MainWindow::handleTcpError(QAbstractSocket::SocketError error)
+{
+    ui->rxText->appendPlainText(
+        QStringLiteral("[TCP] %1").arg(m_tcp.errorString()));
+
+    // 网关到时结束也会关闭连接，随后由disconnected清理。
+    if (error == QAbstractSocket::RemoteHostClosedError)
+        return;
+
+    m_tcpConnectTimer.stop();
+    m_tcp.abort();
+    updateConnectionUi();
+}
+
+void MainWindow::updateConnectionControls()
+{
+    const bool serial = m_serial.isOpen();
+    const bool tcpBusy =
+        m_tcp.state() != QAbstractSocket::UnconnectedState;
+    const bool tcpConnected =
+        m_tcp.state() == QAbstractSocket::ConnectedState;
+
+    // 两种通道互斥，避免混用同一个组帧缓存。
+    ui->connectButton->setEnabled(!tcpBusy);
+    ui->connectButton->setText(serial ? "Disconnect" : "Connect");
+    ui->portCombo->setEnabled(!serial && !tcpBusy);
+    ui->refreshButton->setEnabled(!serial && !tcpBusy);
+
+    ui->tcpHostEdit->setEnabled(!serial && !tcpBusy);
+    ui->tcpPortEdit->setEnabled(!serial && !tcpBusy);
+    ui->tcpConnectButton->setEnabled(!serial);
+
+    ui->tcpConnectButton->setText(
+        tcpConnected
+            ? QStringLiteral("断开TCP")
+            : (tcpBusy
+                   ? QStringLiteral("取消连接")
+                   : QStringLiteral("连接TCP")));
+
+    if (serial)
+    {
+        ui->statusLabel->setText(
+            m_serial.portName() + " 115200 8N1");
+    }
+    else if (tcpConnected)
+    {
+        ui->statusLabel->setText(
+            QStringLiteral("TCP %1:%2（只读）")
+                .arg(m_tcp.peerAddress().toString())
+                .arg(m_tcp.peerPort()));
+    }
+    else if (tcpBusy)
+    {
+        ui->statusLabel->setText(
+            QStringLiteral("TCP连接中……"));
+    }
+    else
+    {
+        ui->statusLabel->setText(
+            QStringLiteral("未连接"));
+    }
+
+    // 这里只刷新控件，不清空报告或趋势。
+    updateCommandButtons();
+    updateRecordingUi();
 }

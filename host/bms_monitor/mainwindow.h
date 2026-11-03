@@ -8,6 +8,7 @@
 #include "bms_log_parser.h"
 #include "bms_commands.h"
 #include "bms_csv_logger.h"
+#include <QTcpSocket>
 
 QT_BEGIN_NAMESPACE
 namespace Ui {
@@ -28,6 +29,12 @@ private:
     void refreshPorts();
     void toggleConnection();
     void readSerialData();
+    void processIncomingData(const QByteArray &data);
+    void toggleTcpConnection();
+    void readTcpData();
+    void handleTcpError(QAbstractSocket::SocketError error);
+    bool isTransportConnected() const;
+    void updateConnectionControls();
     void handleSerialError(QSerialPort::SerialPortError error);
     void updateConnectionUi();
     void showTelemetry(const BmsLogRecord &record);
@@ -49,6 +56,11 @@ private:
     Ui::MainWindow *ui;
     // 串口属于这个窗口，关闭窗口时会自动析构。
     QSerialPort m_serial;
+    QTcpSocket m_tcp;
+    QTimer m_tcpConnectTimer;
+
+    // 判断选文件期间是否已经换了连接。
+    quint64 m_connectionEpoch = 0;
     BmsLineBuffer m_lineBuffer;
     QElapsedTimer m_lastReport;
     QTimer m_reportTimer;
