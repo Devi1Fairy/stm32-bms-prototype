@@ -28,7 +28,7 @@ bool ParseBmsLog(const QByteArray &line, BmsLogRecord &result);
 class BmsLineBuffer
 {
 public:
-    QList<QByteArray> append(const QByteArray &data);
+    QList<QByteArray> append(const QByteArray &data, bool trimLines = true);
     void reset();
 
 private:

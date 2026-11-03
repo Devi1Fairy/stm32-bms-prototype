@@ -219,20 +219,23 @@ void MainWindow::readSerialData()
     processIncomingData(m_serial.readAll());
 }
 
-void MainWindow::processIncomingData(const QByteArray &data)
+void MainWindow::processIncomingData(
+    const QByteArray &data, bool tcpSource)
 {
-    const auto lines = m_lineBuffer.append(data);
+    const auto lines = m_lineBuffer.append(data, !tcpSource);
 
     for (const QByteArray &line : lines)
     {
         ui->rxText->appendPlainText(QString::fromLatin1(line));
 
-        BmsLogRecord record;
+        // 只允许TCP收到的能力声明开启网络控制。
+        if (tcpSource && handleGatewayLine(line))
+            continue;
 
+        BmsLogRecord record;
         if (!ParseBmsLog(line, record))
             continue;
 
-        // 只有完整且校验通过的报告，才刷新在线状态。
         m_latestReport = record;
         m_haveReport = true;
         m_lastReport.start();
@@ -244,7 +247,6 @@ void MainWindow::processIncomingData(const QByteArray &data)
         ui->trendWidget->addRecord(record);
     }
 }
-
 bool MainWindow::hasFreshReport() const
 {
     return m_haveReport && m_lastReport.isValid()
@@ -253,7 +255,7 @@ bool MainWindow::hasFreshReport() const
 
 void MainWindow::updateCommandButtons()
 {
-    const bool connected = m_serial.isOpen();
+    const bool connected = hasControlChannel();
     const bool fresh = hasFreshReport();
     const bool pending = m_pendingCommand != BmsCommand::None;
 
@@ -269,58 +271,119 @@ void MainWindow::updateCommandButtons()
 
 void MainWindow::sendCommand(BmsCommand command)
 {
-    // 点击时再检查一次，避免按钮显示后数据已经过期。
-    if (!BmsCommandAllowed(command, m_serial.isOpen(), hasFreshReport(),
-                           m_pendingCommand != BmsCommand::None,
-                           m_latestReport))
+    if (!BmsCommandAllowed(
+            command,
+            hasControlChannel(),
+            hasFreshReport(),
+            m_pendingCommand != BmsCommand::None,
+            m_latestReport))
     {
         ui->commandLabel->setText(
             QStringLiteral("当前条件不允许此命令。"));
         return;
     }
 
-    // 只发送一个字符，不附加回车换行。
-    const QByteArray data(1, static_cast<char>(command));
+    const bool tcpCommand = !m_serial.isOpen();
+    quint32 requestId = 0;
+    QByteArray data;
 
-    if (m_serial.write(data) != data.size())
+    if (tcpCommand)
     {
-        m_pendingCommand = BmsCommand::None;
-        m_commandWait.invalidate();
+        // 编号一旦分配就不回退，失败或超时也不复用。
+        requestId = static_cast<quint32>(m_nextTcpCommandId++);
+        data = EncodeGatewayCommand(requestId, command);
+
+        // 限制本机待发送数据，避免慢连接持续积压。
+        if (m_tcp.bytesToWrite() + data.size() > 256)
+        {
+            ui->commandLabel->setText(
+                QStringLiteral(
+                    "TCP发送缓存繁忙，本次未提交；不自动重发。"));
+
+            updateCommandButtons();
+            return;
+        }
+    }
+    else
+    {
+        // 直接串口模式仍然只发送原来的S/T/C单字节。
+        data = QByteArray(1, static_cast<char>(command));
+    }
+
+    const quint64 epoch = m_connectionEpoch;
+
+    // STOP可以替换本机之前等待的命令。
+    // 之前命令的回执随后会因编号不匹配而被忽略。
+    m_pendingCommand = command;
+    m_pendingTcpId = requestId;
+    m_gatewayAcked = false;
+    m_commandWait.start();
+
+    const qint64 written =
+        tcpCommand ? m_tcp.write(data) : m_serial.write(data);
+
+    if (written != data.size()
+        || epoch != m_connectionEpoch
+        || !isTransportConnected())
+    {
+        if (epoch == m_connectionEpoch)
+            clearPendingCommand();
+
+        // 出现不完整写入时结束连接，
+        // 避免残留命令前缀与下一条命令拼接。
+        if (tcpCommand)
+            m_tcp.abort();
 
         ui->commandLabel->setText(
-            QStringLiteral("串口写入失败，结果未确认。"));
+            QStringLiteral(
+                "写入未完成或连接改变，结果未知；不自动重发。"));
 
         updateCommandButtons();
         return;
     }
 
-    // write接收了字节，接下来等待上报。
-    // 停止请求可以覆盖之前正在等待的其他命令。
-    m_pendingCommand = command;
-    m_commandWait.start();
-
     ui->commandLabel->setText(
-        QStringLiteral("已交给串口：%1，等待MCU上报。")
-            .arg(QChar::fromLatin1(static_cast<char>(command))));
+        tcpCommand
+            ? QStringLiteral(
+                  "命令 #%1 已交给TCP，等待网关回执。")
+                  .arg(requestId)
+            : QStringLiteral("已交给串口，等待状态报告。"));
+
+    if (tcpCommand && !GatewayIdValid(m_nextTcpCommandId))
+    {
+        ui->commandLabel->setText(
+            ui->commandLabel->text()
+            + QStringLiteral(
+                " 编号已用尽，后续需手动重连。"));
+    }
 
     updateCommandButtons();
 }
 
 void MainWindow::checkCommandResult(const BmsLogRecord &record)
 {
-    if (m_pendingCommand == BmsCommand::None
-        || !BmsCommandTargetObserved(m_pendingCommand, record))
-    {
+    if (m_pendingCommand == BmsCommand::None)
         return;
-    }
+
+    // 网络命令必须先收到对应ACK。
+    if (m_pendingTcpId != 0 && !m_gatewayAcked)
+        return;
+
+    if (!BmsCommandTargetObserved(m_pendingCommand, record))
+        return;
+
+    const QString name =
+        m_pendingTcpId != 0
+            ? QStringLiteral("#%1").arg(m_pendingTcpId)
+            : QString(QChar::fromLatin1(
+                  static_cast<char>(m_pendingCommand)));
+
+    clearPendingCommand();
 
     ui->commandLabel->setText(
-        QStringLiteral("已观察到目标状态（命令 %1）。")
-            .arg(QChar::fromLatin1(
-                static_cast<char>(m_pendingCommand))));
-
-    m_pendingCommand = BmsCommand::None;
-    m_commandWait.invalidate();
+        QStringLiteral(
+            "已在后续报告中观察到目标状态（命令 %1）。")
+            .arg(name));
 }
 
 void MainWindow::showTelemetry(const BmsLogRecord &record)
@@ -374,23 +437,24 @@ void MainWindow::showTelemetry(const BmsLogRecord &record)
 
 void MainWindow::checkReportTimeout()
 {
-    if (isTransportConnected() && m_lastReport.isValid()
+    if (isTransportConnected()
+        && m_lastReport.isValid()
         && m_lastReport.elapsed() >= 1000)
     {
         ui->telemetryLabel->setText(
             QStringLiteral(
-                "数据过期：超过1秒没有收到可解析的完整上报。"));
+                "数据过期：超过1秒没有收到完整BMS报告。"));
 
         m_lastReport.invalidate();
         m_haveReport = false;
 
         if (m_pendingCommand != BmsCommand::None)
         {
-            ui->commandLabel->setText(
-                QStringLiteral("上报已过期，命令结果未确认。"));
+            clearPendingCommand();
 
-            m_pendingCommand = BmsCommand::None;
-            m_commandWait.invalidate();
+            ui->commandLabel->setText(
+                QStringLiteral(
+                    "上报已过期，命令结果未知；不自动重发。"));
         }
     }
 
@@ -398,12 +462,17 @@ void MainWindow::checkReportTimeout()
         && m_commandWait.isValid()
         && m_commandWait.elapsed() >= 2000)
     {
-        ui->commandLabel->setText(
-            QStringLiteral(
-                "2秒内未观察到目标状态，命令结果未确认。"));
+        const bool waitingAck =
+            m_pendingTcpId != 0 && !m_gatewayAcked;
 
-        m_pendingCommand = BmsCommand::None;
-        m_commandWait.invalidate();
+        clearPendingCommand();
+
+        ui->commandLabel->setText(
+            waitingAck
+                ? QStringLiteral(
+                      "2秒内未收到对应网关回执，结果未知；不自动重发。")
+                : QStringLiteral(
+                      "2秒内未观察到目标状态，结果未知；不自动重发。"));
     }
 
     updateCommandButtons();
@@ -441,8 +510,11 @@ void MainWindow::updateConnectionUi()
     ui->trendWidget->reset();
     m_haveReport = false;
     m_latestReport = BmsLogRecord{};
-    m_pendingCommand = BmsCommand::None;
-    m_commandWait.invalidate();
+    clearPendingCommand();
+
+    // 新连接不能继承上一个连接的控制能力和编号。
+    m_tcpControlEnabled = false;
+    m_nextTcpCommandId = 1;
     m_lastReport.invalidate();
 
     if (connected)
@@ -461,7 +533,7 @@ void MainWindow::updateConnectionUi()
     else if (m_tcp.state() != QAbstractSocket::UnconnectedState)
     {
         ui->commandLabel->setText(
-            QStringLiteral("TCP仅接收遥测，网关暂不支持控制。"));
+            QStringLiteral("TCP已连接，等待控制能力声明；当前只读。"));
     }
     else
     {
@@ -660,7 +732,90 @@ void MainWindow::readTcpData()
     const QByteArray data = m_tcp.readAll();
 
     if (!m_serial.isOpen())
-        processIncomingData(data);
+        processIncomingData(data, true);
+}
+
+bool MainWindow::handleGatewayLine(const QByteArray &line)
+{
+    GatewayMessage message;
+    if (!ParseGatewayMessage(line, message))
+        return false;
+
+    if (m_tcp.state() != QAbstractSocket::ConnectedState)
+        return true;
+
+    if (message.type == GatewayMessageType::Capability)
+    {
+        // 重复声明不能重置编号或正在等待的命令。
+        if (!m_tcpControlEnabled)
+        {
+            m_tcpControlEnabled = true;
+
+            if (m_pendingCommand == BmsCommand::None)
+            {
+                ui->commandLabel->setText(
+                    QStringLiteral(
+                        "网关支持控制；启动和清除仍需新鲜状态。"));
+            }
+        }
+
+        updateConnectionControls();
+        return true;
+    }
+
+    // 无法关联的回执只保留在日志中。
+    // 尤其不能用旧编号回执结束新的STOP等待项。
+    if (!m_tcpControlEnabled || m_pendingTcpId == 0
+        || message.id != m_pendingTcpId)
+    {
+        return true;
+    }
+
+    if (message.type == GatewayMessageType::UartAccepted)
+    {
+        if (!m_gatewayAcked)
+        {
+            m_gatewayAcked = true;
+
+            // 从收到ACK开始，另行计时观察后续状态。
+            // 重复ACK不会重新计时。
+            m_commandWait.start();
+
+            ui->commandLabel->setText(
+                QStringLiteral(
+                    "命令 #%1 已提交串口，等待后续状态报告。")
+                    .arg(message.id));
+        }
+    }
+    else if (message.type == GatewayMessageType::Error)
+    {
+        clearPendingCommand();
+
+        ui->commandLabel->setText(
+            QStringLiteral("命令 #%1 返回错误：%2")
+                .arg(message.id)
+                .arg(QString::fromLatin1(message.reason)));
+
+        updateCommandButtons();
+    }
+
+    return true;
+}
+
+bool MainWindow::hasControlChannel() const
+{
+    return m_serial.isOpen()
+           || (m_tcp.state() == QAbstractSocket::ConnectedState
+               && m_tcpControlEnabled
+               && GatewayIdValid(m_nextTcpCommandId));
+}
+
+void MainWindow::clearPendingCommand()
+{
+    m_pendingCommand = BmsCommand::None;
+    m_pendingTcpId = 0;
+    m_gatewayAcked = false;
+    m_commandWait.invalidate();
 }
 
 void MainWindow::handleTcpError(QAbstractSocket::SocketError error)
@@ -710,9 +865,12 @@ void MainWindow::updateConnectionControls()
     else if (tcpConnected)
     {
         ui->statusLabel->setText(
-            QStringLiteral("TCP %1:%2（只读）")
-                .arg(m_tcp.peerAddress().toString())
-                .arg(m_tcp.peerPort()));
+        QStringLiteral("TCP %1:%2（%3）")
+            .arg(m_tcp.peerAddress().toString())
+            .arg(m_tcp.peerPort())
+            .arg(m_tcpControlEnabled
+                    ? QStringLiteral("可控制")
+                    : QStringLiteral("只读")));
     }
     else if (tcpBusy)
     {

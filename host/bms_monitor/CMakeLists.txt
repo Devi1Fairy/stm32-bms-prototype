@@ -19,6 +19,8 @@ qt_add_executable(qt_smoke
     bms_csv_logger.cpp
     bms_trend_widget.h
     bms_trend_widget.cpp
+    bms_gateway_protocol.h
+    bms_gateway_protocol.cpp
 )
 target_include_directories(qt_smoke PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 

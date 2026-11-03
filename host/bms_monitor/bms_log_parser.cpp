@@ -89,7 +89,8 @@ bool ParseBmsLog(const QByteArray &line, BmsLogRecord &result)
     return true;
 }
 
-QList<QByteArray> BmsLineBuffer::append(const QByteArray &data)
+QList<QByteArray> BmsLineBuffer::append(
+    const QByteArray &data, bool trimLines)
 {
     QList<QByteArray> lines;
 
@@ -99,7 +100,8 @@ QList<QByteArray> BmsLineBuffer::append(const QByteArray &data)
         {
             if (!m_discarding && !m_pending.trimmed().isEmpty())
             {
-                lines.append(m_pending.trimmed());
+                // 串口保持原有行为；TCP保留原始正文供协议精确检查。
+                lines.append(trimLines ? m_pending.trimmed() : m_pending);
             }
 
             m_pending.clear();
