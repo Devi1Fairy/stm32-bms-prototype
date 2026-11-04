@@ -66,6 +66,9 @@ typedef struct
 
     /* 温度，单位 0.1℃；value 为 250 表示 25.0℃，-50 表示 -5.0℃。 */
     BmsMeasurement temperature_dC;
+
+    /* INA226实测母线电压，单位mV，独立于模拟单体电压。 */
+    BmsMeasurement bus_mv;
 } BmsSample;
 
 #endif /* BMS_TYPES_H */

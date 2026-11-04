@@ -20,6 +20,14 @@ const BmsControllerConfig bms_config = {
         .temperature_max_age_ms = BMS_TEMPERATURE_MAX_AGE_MS,
         .current_max_age_ms = BMS_CURRENT_MAX_AGE_MS,
         .stable_time_ms = 2000u
+    },
+    .bus = {
+        .enabled = 1u,
+        .under_mv = 4500,
+        .over_mv = 5500,
+        .recover_min_mv = 4700,
+        .recover_max_mv = 5300,
+        .max_age_ms = BMS_CURRENT_MAX_AGE_MS
     }
 };
 

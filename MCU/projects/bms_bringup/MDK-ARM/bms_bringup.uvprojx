@@ -2119,6 +2119,16 @@
               <FileType>1</FileType>
               <FilePath>..\Components\Bms\Src\bms_watchdog.c</FilePath>
             </File>
+            <File>
+              <FileName>bms_bus_voltage.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\Components\Bms\Inc\bms_bus_voltage.h</FilePath>
+            </File>
+            <File>
+              <FileName>bms_bus_voltage.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Components\Bms\Src\bms_bus_voltage.c</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>

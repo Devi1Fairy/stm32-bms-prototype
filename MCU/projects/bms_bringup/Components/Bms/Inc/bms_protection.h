@@ -147,7 +147,9 @@ typedef enum
     BMS_FAULT_CHARGE_OC      = 1u << 4,  /* 充电过流 */
     BMS_FAULT_DATA_INVALID   = 1u << 5,  /* 至少一路数据无效 */
     BMS_FAULT_SAMPLE_TIMEOUT = 1u << 6,  /* 至少一路数据超时 */
-    BMS_FAULT_INPUT_ERROR    = 1u << 7   /* 检查参数或结果类型错误 */
+    BMS_FAULT_INPUT_ERROR    = 1u << 7,  /* 检查参数或结果类型错误 */
+    BMS_FAULT_BUS_OV         = 1u << 8,  /* 实测母线过压，0x100 */
+    BMS_FAULT_BUS_UV         = 1u << 9   /* 实测母线欠压，0x200 */
 } BmsFaultFlag;
 
 /*

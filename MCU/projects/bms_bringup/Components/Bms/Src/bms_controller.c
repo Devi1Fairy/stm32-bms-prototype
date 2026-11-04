@@ -12,6 +12,9 @@ static uint8_t Bms_ControllerConfigIsValid(
         return 0u;
     }
 
+    if (Bms_BusConfigIsValid(&config->bus) == 0u)
+    return 0u;
+
     recovery = &config->recovery;
 
     /* 先检查正常保护参数是否成立。 */
@@ -111,10 +114,14 @@ void Bms_ControllerStep(
     controller->active_faults = Bms_CombineFaults(
         &voltage, temperature, current);
 
+    controller->active_faults |= Bms_CheckBusVoltage(
+        &sample->bus_mv, &config->bus, now_ms);
+
     /* 2：只有已经处于故障锁定时，才累计恢复时间。 */
     controller->clear_allowed = 0u;
 
-    if (controller->machine.state == BMS_STATE_FAULT_LOCK)
+    if ((controller->machine.state == BMS_STATE_FAULT_LOCK)
+        && (Bms_BusRecoveryReady(&sample->bus_mv, &config->bus, now_ms) != 0u))
     {
         controller->clear_allowed = Bms_RecoveryUpdate(
             &controller->recovery, sample, &config->recovery,

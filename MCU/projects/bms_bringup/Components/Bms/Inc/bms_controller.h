@@ -3,6 +3,7 @@
 
 #include "bms_state_machine.h"
 #include "bms_recovery.h"
+#include "bms_bus_voltage.h"
 
 /* 正常保护阈值与恢复配置放在一起，便于统一校验。 */
 typedef struct
@@ -16,6 +17,7 @@ typedef struct
     uint32_t temperature_max_age_ms;
     uint32_t current_max_age_ms;
     BmsRecoveryConfig recovery;
+    BmsBusVoltageConfig bus;
 } BmsControllerConfig;
 
 /* 需要跨控制周期保留的记录。 */

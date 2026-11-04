@@ -121,6 +121,8 @@ int main(void)
     report.sample.current_ma = (BmsMeasurement){0, 99u, 1u, BMS_SOURCE_EXTERNAL};
     report.ina_result = 1;
     report.bus_mv = 5290u;
+    report.sample.bus_mv =
+        (BmsMeasurement){5290, 99u, 1u, BMS_SOURCE_EXTERNAL};
     report.sample_count = 831u;
     report.control_count = 4611u;
     report.control_max_interval_ms = 20u;
@@ -128,7 +130,7 @@ int main(void)
     assert(strcmp(log_text,
         "BMS state=1, faults=0x00000000, latched=0x00000000, load=0, clear=0, "
         "cell0_mv=3449, temp_est_dC=268, i_ma=0, iv=1, i_src=3, i_age=101, "
-        "ina=1, bus_mv=5290, sample=831, ctrl=4611, gap_max=20\r\n") == 0);
+        "ina=1, bus_mv=5290, sample=831, ctrl=4611, gap_max=20, bus_v=1, bus_age=101\r\n") == 0);
     uart_ok = 0u;
     assert(Bms_CommPoll(&report, 400u));
     assert(Bms_CommPoll(&report, 1000u) && sent_count == 5u);

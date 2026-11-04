@@ -232,7 +232,8 @@ uint8_t Bms_CommPoll(const BmsTelemetry *report, uint32_t now_ms)
         "BMS state=%u, faults=0x%08lX, latched=0x%08lX, "
         "load=%u, clear=%u, cell0_mv=%ld, temp_est_dC=%ld, "
         "i_ma=%ld, iv=%u, i_src=%u, i_age=%lu, "
-        "ina=%ld, bus_mv=%lu, sample=%lu, ctrl=%lu, gap_max=%lu\r\n",
+        "ina=%ld, bus_mv=%lu, sample=%lu, ctrl=%lu, gap_max=%lu, "
+        "bus_v=%u, bus_age=%lu\r\n",
         (unsigned int)report->status.state,
         (unsigned long)report->status.active_faults,
         (unsigned long)report->status.latched_faults,
@@ -248,7 +249,9 @@ uint8_t Bms_CommPoll(const BmsTelemetry *report, uint32_t now_ms)
         (unsigned long)report->bus_mv,
         (unsigned long)report->sample_count,
         (unsigned long)report->control_count,
-        (unsigned long)report->control_max_interval_ms);
+        (unsigned long)report->control_max_interval_ms,
+        (unsigned int)report->sample.bus_mv.valid,
+        (unsigned long)(uint32_t)(now_ms - report->sample.bus_mv.timestamp_ms));
 
     if ((length <= 0) || ((size_t)length >= sizeof(uart_tx_buffer)))
     {

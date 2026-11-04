@@ -95,9 +95,10 @@ int main(void)
   MX_CAN_Init();
   MX_I2C1_Init();
   MX_IWDG_Init();
-  Bms_TasksInitWatchdog();
-    Bsp_WatchdogLogReset();
+
   /* USER CODE BEGIN 2 */
+    Bms_TasksInitWatchdog();
+    Bsp_WatchdogLogReset();
   /* USER CODE END 2 */
 
   /* Call init function for freertos objects (in cmsis_os2.c) */

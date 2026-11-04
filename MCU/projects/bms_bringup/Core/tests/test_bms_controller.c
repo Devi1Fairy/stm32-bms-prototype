@@ -54,7 +54,8 @@ int main(void)
     const BmsControllerConfig config = {
         3000, 4200, 600, 1000, 500,
         500u, 500u, 500u,
-        {3200, 4100, 550, 800, 300, 500u, 500u, 500u, 2000u}
+        {3200, 4100, 550, 800, 300, 500u, 500u, 500u, 2000u},
+        {0}
     };
     BmsControllerConfig bad_config;
     const uint32_t multiple_faults =

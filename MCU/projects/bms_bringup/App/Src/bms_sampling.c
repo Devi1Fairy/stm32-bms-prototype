@@ -144,9 +144,11 @@ static void Bms_UpdateDemoSample(BmsSample *sample, uint32_t now_ms)
     }
 }
 
-static void Bms_UpdateCurrentMeasurement(BmsSample *sample)
+static void Bms_UpdateIna226Measurements(BmsSample *sample)
 {
     sample->current_ma.source = BMS_SOURCE_EXTERNAL;
+    sample->bus_mv.source = BMS_SOURCE_EXTERNAL;
+
     bms_ina226_result = Ina226_Read(&bms_ina226_sample);
     Ina226_GetDiagnostics(&bms_ina226_diag);
 
@@ -155,13 +157,19 @@ static void Bms_UpdateCurrentMeasurement(BmsSample *sample)
         sample->current_ma.value = bms_ina226_sample.current_ma;
         sample->current_ma.timestamp_ms = bms_ina226_sample.timestamp_ms;
         sample->current_ma.valid = 1u;
+
+        sample->bus_mv.value = (int32_t)bms_ina226_sample.bus_mv;
+        sample->bus_mv.timestamp_ms = bms_ina226_sample.timestamp_ms;
+        sample->bus_mv.valid = 1u;
     }
     else if (bms_ina226_result == INA226_ERROR)
     {
+        /* 完整读取失败，两路都标无效，保留旧值和旧时间。 */
         sample->current_ma.valid = 0u;
+        sample->bus_mv.valid = 0u;
     }
 
-    /* NO_DATA保留旧值、旧时间和原valid，由保护检查是否过期。 */
+    /* NO_DATA不刷新任何一路时间，由保护判断旧数据是否过期。 */
 }
 
 static void Bms_UpdateEnergy(BmsAcquisition *acquisition)
@@ -217,7 +225,7 @@ void Bms_SamplingRead(BmsAcquisition *acquisition, uint32_t now_ms)
     }
 
     Bms_UpdateDemoSample(&acquisition->sample, now_ms);
-    Bms_UpdateCurrentMeasurement(&acquisition->sample);
+    Bms_UpdateIna226Measurements(&acquisition->sample);
     Bms_UpdateEnergy(acquisition);
     acquisition->ina_result = bms_ina226_result;
     acquisition->bus_mv = bms_ina226_sample.bus_mv;
