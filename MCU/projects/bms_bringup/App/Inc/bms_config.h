@@ -22,6 +22,8 @@
 
 #define BMS_HEALTH_TIMEOUT_MS     2000u
 
+#define BMS_WATCHDOG_STARTUP_GRACE_MS 3000u
+
 /* 仍是演示常量，不能把首份数据等待当作完整硬件自检。 */
 #define BMS_DEMO_SELF_TEST_PASSED     1u
 

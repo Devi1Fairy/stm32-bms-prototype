@@ -9,6 +9,8 @@
 #include "FreeRTOS.h"
 #include "task.h"
 #include "bms_health.h"
+#include "bms_watchdog.h"
+#include "bsp_watchdog.h"
 
 /* 控制器只由保护任务修改，其他任务通过报告副本读取结果。 */
 static BmsSample bms_sample = {0};
@@ -38,6 +40,12 @@ static volatile uint32_t bms_health_seen_mask = 0u;
 static volatile uint32_t bms_health_missing_mask = BMS_HEALTH_ALL_MASK;
 static volatile uint32_t bms_health_ok = 0u;
 static volatile uint32_t bms_health_check_count = 0u;
+
+static BmsWatchdog bms_watchdog = {0};
+static volatile uint32_t bms_watchdog_feed_count = 0u;
+
+/* 仅供板测：让心跳任务留在等待中，不再检查健康或喂狗。 */
+static volatile uint32_t bms_watchdog_test_block_heartbeat = 0u;
 
 /* 仅供本轮漏报实验：
  * 位为1时，对应任务跳过报到，但继续原本工作。
@@ -80,6 +88,18 @@ static void Bms_CheckTaskHealth(void)
 
     bms_health_ok = bms_health_missing_mask == 0u ? 1u : 0u;
     bms_health_check_count++;
+
+    /* 唯一的周期喂狗入口。
+    * 启动宽限有上限，任务超时后锁定停止。
+    */
+    if (Bms_WatchdogStep(&bms_watchdog,
+                        bms_health_missing_mask, now_ms) != 0u)
+    {
+        if (Bsp_WatchdogRefresh() == 0u)
+            Error_Handler();
+
+        bms_watchdog_feed_count++;
+    }
 }
 
 static void Bms_UpdateIndicators(void)
@@ -159,6 +179,12 @@ static void Bms_RunControlCycle(uint32_t startup_ms, uint8_t *sample_seen)
     bms_control_last_ms = now_ms;
     bms_control_cycle_count++;
     Bms_PublishTelemetry();
+}
+
+void Bms_TasksInitWatchdog(void)
+{
+    Bms_WatchdogInit(&bms_watchdog, HAL_GetTick(),
+                      BMS_WATCHDOG_STARTUP_GRACE_MS);
 }
 
 void Bms_RunTask(void)
@@ -264,6 +290,9 @@ void Bms_RunHeartbeatTask(void)
     for (;;)
     {
         vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(BMS_LED_PERIOD_MS));
+        /* 其他任务仍可运行，用于验证检查任务停顿时的硬件复位。 */
+        while (bms_watchdog_test_block_heartbeat != 0u)
+        osDelay(100u);
         Bsp_OutputToggleHeartbeat();
         bms_rtos_led_count++;
         bms_rtos_led_stack_free_words =

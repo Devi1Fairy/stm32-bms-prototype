@@ -5,5 +5,6 @@ void Bms_RunTask(void);
 void Bms_RunSampleTask(void);
 void Bms_RunCommTask(void);
 void Bms_RunHeartbeatTask(void);
+void Bms_TasksInitWatchdog(void);
 
 #endif
