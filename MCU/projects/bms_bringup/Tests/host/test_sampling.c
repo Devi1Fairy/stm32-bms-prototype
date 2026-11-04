@@ -104,6 +104,28 @@ int main(void)
     assert(!frame.sample.current_ma.valid && frame.ina_result == INA226_ERROR);
     Bms_SamplingRead(NULL, 690u);
     assert(frame.sample_count == 6u);
+    assert(frame.energy.gaps == 2u && frame.energy.covered_ms == 0u);
+
+    shunt = 1920u;
+    tick = 700u;
+    Bms_SamplingRead(&frame, 690u);
+
+    tick = 800u;
+    Bms_SamplingRead(&frame, 790u);
+    assert(frame.energy.discharge_mams == 4800u);
+    assert(frame.energy.covered_ms == 100u);
+    assert(frame.energy.discharge_nj == 25392000u);
+
+    /* 同时间戳不能重复累计。 */
+    Bms_SamplingRead(&frame, 790u);
+    assert(frame.energy.discharge_mams == 4800u);
+
+    /* 暂停后不接着旧端点算。 */
+    Bms_SamplingBreakEnergy();
+    tick = 900u;
+    Bms_SamplingRead(&frame, 890u);
+    assert(frame.energy.discharge_mams == 4800u);
+    assert(frame.energy.gaps == 3u);
     puts("ADC mapping, INA226 byte order/sign, NEW/NO_DATA/ERROR and timestamps passed.");
     return 0;
 }

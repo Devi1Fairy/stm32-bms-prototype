@@ -126,6 +126,86 @@ QList<QByteArray> BmsLineBuffer::append(
     return lines;
 }
 
+bool ParseBmsStatLog(const QByteArray &line, BmsStatRecord &result)
+{
+    const QByteArray text = line.trimmed();
+
+    if (!text.startsWith("STAT ") || text.size() > 1024)
+        return false;
+
+    // 先把“字段名=字段值”拆开。
+    QHash<QByteArray, QByteArray> fields;
+
+    for (const QByteArray &part : text.mid(5).split(','))
+    {
+        const qsizetype equal = part.indexOf('=');
+
+        // 每一项只能有一个等号。
+        if (equal <= 0 || equal != part.lastIndexOf('='))
+            return false;
+
+        const QByteArray key = part.left(equal).trimmed();
+        const QByteArray value = part.mid(equal + 1).trimmed();
+
+        // 不接受空字段和重复字段。
+        if (key.isEmpty() || value.isEmpty() || fields.contains(key))
+            return false;
+
+        fields.insert(key, value);
+    }
+
+    bool valid = true;
+
+    const auto read = [&fields, &valid](const char *key) -> quint64
+    {
+        const QByteArray value = fields.value(key);
+
+        if (value.isEmpty())
+        {
+            valid = false;
+            return 0;
+        }
+
+        // 累计量只接受十进制数字，拒绝负号、小数和十六进制。
+        for (char c : value)
+        {
+            if (c < '0' || c > '9')
+            {
+                valid = false;
+                return 0;
+            }
+        }
+
+        bool ok = false;
+        const quint64 number = value.toULongLong(&ok, 10);
+
+        valid = valid && ok;
+        return number;
+    };
+
+    BmsStatRecord next;
+
+    next.qOutUah = read("q_out_uah");
+    next.qInUah = read("q_in_uah");
+    next.eOutUwh = read("e_out_uwh");
+    next.eInUwh = read("e_in_uwh");
+    next.coveredMs = read("covered_ms");
+
+    const quint64 gaps = read("gaps");
+    const quint64 overflow = read("overflow");
+
+    if (!valid || gaps > std::numeric_limits<quint32>::max()
+        || overflow > 1)
+        return false;
+
+    next.gaps = static_cast<quint32>(gaps);
+    next.overflow = overflow != 0;
+
+    // 避免报文前几个字段正常、后几个异常时，只更新了一半数据。
+    result = next;
+    return true;
+}
+
 void BmsLineBuffer::reset()
 {
     m_pending.clear();

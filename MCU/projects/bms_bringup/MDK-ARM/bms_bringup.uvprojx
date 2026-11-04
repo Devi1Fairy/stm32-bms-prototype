@@ -1969,6 +1969,16 @@
               <FileType>5</FileType>
               <FilePath>..\Components\Bms\Inc\bms_types.h</FilePath>
             </File>
+            <File>
+              <FileName>bms_energy.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Components\Bms\Src\bms_energy.c</FilePath>
+            </File>
+            <File>
+              <FileName>bms_energy.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\Components\Bms\Inc\bms_energy.h</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>

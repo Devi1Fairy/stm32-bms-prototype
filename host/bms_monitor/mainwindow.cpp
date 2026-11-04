@@ -11,12 +11,14 @@
 #include <QStandardPaths>
 #include <QHostAddress>
 #include <QNetworkProxy>
+#include <limits>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
     , ui(new Ui::MainWindow)
 {
     ui->setupUi(this);
+    ui->statisticsLabel->setWordWrap(true);
     // 不让Qt在关闭串口前恢复打开前缓存的旧参数。
     m_serial.setSettingsRestoredOnClose(false);
     setWindowTitle("BMS Monitor");
@@ -232,6 +234,17 @@ void MainWindow::processIncomingData(
         if (tcpSource && handleGatewayLine(line))
             continue;
 
+        BmsStatRecord stat;
+
+        if (ParseBmsStatLog(line, stat))
+        {
+            acceptStatistics(stat);
+
+            // STAT和BMS分别处理。
+            // 统计报文不能刷新实时测量的超时计时，也不能判定命令执行成功。
+            continue;
+        }
+
         BmsLogRecord record;
         if (!ParseBmsLog(line, record))
             continue;
@@ -437,6 +450,7 @@ void MainWindow::showTelemetry(const BmsLogRecord &record)
 
 void MainWindow::checkReportTimeout()
 {
+    showStatistics();
     if (isTransportConnected()
         && m_lastReport.isValid()
         && m_lastReport.elapsed() >= 1000)
@@ -508,6 +522,13 @@ void MainWindow::updateConnectionUi()
 
     m_lineBuffer.reset();
     ui->trendWidget->reset();
+    // 新连接不能继续显示上一次连接的累计统计。
+    m_latestStat = BmsStatRecord{};
+    m_haveStat = false;
+    m_lastStat.invalidate();
+    m_statSegment = 0;
+
+    showStatistics();
     m_haveReport = false;
     m_latestReport = BmsLogRecord{};
     clearPendingCommand();
@@ -630,7 +651,12 @@ void MainWindow::appendRecording(const BmsLogRecord &record)
         return;
     }
 
-    if (!m_csvLogger.append(record))
+    const bool freshStat = hasFreshStatistics();
+
+    if (!m_csvLogger.append(record,
+                            freshStat ? &m_latestStat : nullptr,
+                            freshStat ? m_lastStat.elapsed() : -1,
+                            m_statSegment))
     {
         ui->recordLabel->setText(
             QStringLiteral("记录已停止：%1")
@@ -886,4 +912,81 @@ void MainWindow::updateConnectionControls()
     // 这里只刷新控件，不清空报告或趋势。
     updateCommandButtons();
     updateRecordingUi();
+}
+
+bool MainWindow::hasFreshStatistics() const
+{
+    return m_haveStat && m_lastStat.isValid()
+    && m_lastStat.elapsed() < BmsStatTimeoutMs;
+}
+
+void MainWindow::acceptStatistics(const BmsStatRecord &record)
+{
+    if (!m_haveStat)
+    {
+        m_statSegment = 1;
+    }
+    else if (record.qOutUah < m_latestStat.qOutUah
+             || record.qInUah < m_latestStat.qInUah
+             || record.eOutUwh < m_latestStat.eOutUwh
+             || record.eInUwh < m_latestStat.eInUwh
+             || record.coveredMs < m_latestStat.coveredMs
+             || record.gaps < m_latestStat.gaps
+             || (m_latestStat.overflow && !record.overflow))
+    {
+        // MCU可能发生复位或统计重置。
+        // 新旧两段累计量不能直接相减。
+        if (m_statSegment != std::numeric_limits<quint64>::max())
+            ++m_statSegment;
+
+        ui->rxText->appendPlainText(
+            QStringLiteral("[STAT] 累计值回退，开始新的统计分段。"));
+    }
+
+    m_latestStat = record;
+    m_haveStat = true;
+    m_lastStat.start();
+
+    showStatistics();
+}
+
+void MainWindow::showStatistics()
+{
+    if (!m_haveStat)
+    {
+        ui->statisticsLabel->setText(isTransportConnected()
+                                     ? QStringLiteral("等待累计统计（STAT）；旧固件可无此报文。")
+                                     : QStringLiteral("累计统计：未连接"));
+        return;
+    }
+
+    if (!hasFreshStatistics())
+    {
+        ui->statisticsLabel->setText(
+            QStringLiteral("统计报文过期：超过2.5秒未收到有效STAT。"));
+        return;
+    }
+
+    // 使用整数商和余数显示小数。
+    // 避免64位累计值先转换成double而丢失精度。
+    const auto fixed = [](quint64 value, quint64 scale, int decimals)
+    {
+        return QString::number(value / scale) + QLatin1Char('.')
+        + QString::number(value % scale)
+             .rightJustified(decimals, QLatin1Char('0'));
+    };
+
+    ui->statisticsLabel->setText(
+        QStringLiteral("累计统计（本连接分段 %1）%2\n"
+                       "放出 %3 mAh / %4 Wh；充入 %5 mAh / %6 Wh\n"
+                       "有效积分覆盖 %7 s；采样缺口 %8")
+            .arg(m_statSegment)
+            .arg(m_latestStat.overflow
+                     ? QStringLiteral("：累计溢出，MCU已停止累计") : QString())
+            .arg(fixed(m_latestStat.qOutUah, 1000, 3))
+            .arg(fixed(m_latestStat.eOutUwh, 1000000, 6))
+            .arg(fixed(m_latestStat.qInUah, 1000, 3))
+            .arg(fixed(m_latestStat.eInUwh, 1000000, 6))
+            .arg(fixed(m_latestStat.coveredMs, 1000, 3))
+            .arg(m_latestStat.gaps));
 }

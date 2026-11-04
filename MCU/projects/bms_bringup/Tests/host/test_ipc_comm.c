@@ -133,6 +133,21 @@ int main(void)
     assert(Bms_CommPoll(&report, 400u));
     assert(Bms_CommPoll(&report, 1000u) && sent_count == 5u);
     assert(!Bms_CommPoll(NULL, 1000u));
+    assert(strncmp(log_text, "STAT ", 5u) == 0);
+
+    report.energy.discharge_mams = 30000000u;
+    report.energy.discharge_nj = UINT64_C(150000000000);
+    report.energy.covered_ms = 600000u;
+    report.energy.gaps = 2u;
+
+    assert(Bms_CommPoll(&report, 2000u));
+    assert(strcmp(log_text,
+        "STAT q_out_uah=8333, q_in_uah=0, e_out_uwh=41666, e_in_uwh=0, "
+        "covered_ms=600000, gaps=2, overflow=0\r\n") == 0);
+
+    report.energy.covered_ms = UINT64_MAX;
+    assert(Bms_CommPoll(&report, 3000u));
+    assert(strstr(log_text, "covered_ms=18446744073709551615") != NULL);
     puts("STOP/FIFO/ISR routing, snapshot copies, query retry and UART fixture passed.");
     return 0;
 }

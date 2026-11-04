@@ -6,5 +6,7 @@
 /* 两个接口都只由采集任务调用，外设不需要跨任务加锁。 */
 uint8_t Bms_SamplingInit(void);
 void Bms_SamplingRead(BmsAcquisition *acquisition, uint32_t now_ms);
+/* 采样暂停时切断积分区间，只能由采集任务调用。 */
+void Bms_SamplingBreakEnergy(void);
 
 #endif

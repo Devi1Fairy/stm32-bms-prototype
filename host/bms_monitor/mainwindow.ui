@@ -89,6 +89,13 @@
      </layout>
     </item>
     <item>
+     <widget class="QLabel" name="statisticsLabel">
+      <property name="text">
+       <string>等待累计统计（STAT）</string>
+      </property>
+     </widget>
+    </item>
+    <item>
      <widget class="QLabel" name="telemetryLabel">
       <property name="text">
        <string>等待数据</string>

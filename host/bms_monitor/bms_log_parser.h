@@ -24,6 +24,25 @@ struct BmsLogRecord
 // 整行检查通过才更新result，失败时保留原对象。
 bool ParseBmsLog(const QByteArray &line, BmsLogRecord &result);
 
+// 对应MCU发来的STAT报文。
+// 累计量使用无符号64位整数，避免长期运行后超出32位范围。
+struct BmsStatRecord
+{
+    quint64 qOutUah = 0;   // 累计放出电量，单位：微安时
+    quint64 qInUah = 0;    // 累计充入电量，单位：微安时
+    quint64 eOutUwh = 0;   // 累计放出能量，单位：微瓦时
+    quint64 eInUwh = 0;    // 累计充入能量，单位：微瓦时
+    quint64 coveredMs = 0; // 实际参与积分的时间，单位：毫秒
+    quint32 gaps = 0;      // 积分连续性中断次数
+    bool overflow = false;
+};
+
+// MCU每秒发送一次STAT，允许一定的通信延迟。
+constexpr qint64 BmsStatTimeoutMs = 2500;
+
+// 整条报文合法时才更新result。
+bool ParseBmsStatLog(const QByteArray &line, BmsStatRecord &result);
+
 // 将串口收到的数据块整理成完整行。
 class BmsLineBuffer
 {

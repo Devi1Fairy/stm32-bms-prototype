@@ -11,7 +11,9 @@ public:
     ~BmsCsvLogger();
 
     bool start(const QString &fileName);
-    bool append(const BmsLogRecord &record);
+    bool append(const BmsLogRecord &record,
+                const BmsStatRecord *stat = nullptr,
+                qint64 statAgeMs = -1, quint64 segment = 0);
     bool stop();
 
     bool isRecording() const { return m_file.isOpen(); }

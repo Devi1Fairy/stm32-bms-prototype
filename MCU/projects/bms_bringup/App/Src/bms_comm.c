@@ -8,6 +8,7 @@
 #include <string.h>
 
 static uint32_t uart_last_ms = 0u;
+static uint32_t energy_last_ms = 0u;
 static uint32_t can_status_last_ms = 0u;
 static char uart_tx_buffer[384];
 static uint8_t can_status_tx_data[8] = {0};
@@ -140,6 +141,57 @@ static void Bms_CanStatusPoll(const BmsTelemetry *report, uint32_t now_ms)
     can_report_requested = 0u;
 }
 
+/* 将64位整数转成文本，兼容旧PC工具链和MCU精简printf。 */
+static void Bms_U64ToText(uint64_t value, char text[21])
+{
+    char reverse[20];
+    uint32_t count = 0u;
+    uint32_t i;
+
+    do
+    {
+        reverse[count++] = (char)('0' + (char)(value % 10u));
+        value /= 10u;
+    } while (value != 0u);
+
+    for (i = 0u; i < count; ++i)
+    {
+        text[i] = reverse[count - 1u - i];
+    }
+
+    text[count] = '\0';
+}
+
+static void Bms_CommLogEnergy(const BmsTelemetry *report)
+{
+    char values[5][21];
+    int length;
+
+    /* 输出微安时、微瓦时，便于用整数保留较小的变化量。 */
+    Bms_U64ToText(report->energy.discharge_mams / 3600u, values[0]);
+    Bms_U64ToText(report->energy.charge_mams / 3600u, values[1]);
+    Bms_U64ToText(report->energy.discharge_nj / 3600000u, values[2]);
+    Bms_U64ToText(report->energy.charge_nj / 3600000u, values[3]);
+    Bms_U64ToText(report->energy.covered_ms, values[4]);
+
+    length = snprintf(
+        uart_tx_buffer, sizeof(uart_tx_buffer),
+        "STAT q_out_uah=%s, q_in_uah=%s, e_out_uwh=%s, e_in_uwh=%s, "
+        "covered_ms=%s, gaps=%lu, overflow=%u\r\n",
+        values[0], values[1], values[2], values[3], values[4],
+        (unsigned long)report->energy.gaps,
+        (unsigned int)report->energy.overflow);
+
+    if ((length <= 0)
+        || ((size_t)length >= sizeof(uart_tx_buffer))
+        || (Bsp_UartWrite(
+                (const uint8_t *)uart_tx_buffer,
+                (uint16_t)length) == 0u))
+    {
+        bms_uart_tx_error_count++;
+    }
+}
+
 uint8_t Bms_CommInit(void)
 {
     uint32_t now_ms;
@@ -150,6 +202,7 @@ uint8_t Bms_CommInit(void)
     }
     now_ms = HAL_GetTick();
     uart_last_ms = now_ms;
+    energy_last_ms = now_ms;
     can_status_last_ms = now_ms;
     return 1u;
 }
@@ -204,6 +257,11 @@ uint8_t Bms_CommPoll(const BmsTelemetry *report, uint32_t now_ms)
     if (Bsp_UartWrite((const uint8_t *)uart_tx_buffer, (uint16_t)length) == 0u)
     {
         bms_uart_tx_error_count++;
+    }
+    if ((uint32_t)(now_ms - energy_last_ms) >= 1000u)
+    {
+        energy_last_ms = now_ms;
+        Bms_CommLogEnergy(report);
     }
     return 1u;
 }

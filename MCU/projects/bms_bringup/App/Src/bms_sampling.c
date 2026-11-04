@@ -21,6 +21,7 @@ static volatile uint8_t bms_ntc_read_ok = 0u;
 static volatile uint32_t bms_ntc_error_count = 0u;
 static volatile int32_t bms_ntc_temp_est_dC = 0;
 static SampleFilter bms_adc_filter;
+static BmsEnergyCounter bms_energy_counter;
 
 static Ina226Sample bms_ina226_sample = {0};
 static Ina226Diagnostics bms_ina226_diag = {0};
@@ -163,8 +164,40 @@ static void Bms_UpdateCurrentMeasurement(BmsSample *sample)
     /* NO_DATA保留旧值、旧时间和原valid，由保护检查是否过期。 */
 }
 
+static void Bms_UpdateEnergy(BmsAcquisition *acquisition)
+{
+    BmsMeasurement *current = &acquisition->sample.current_ma;
+
+    if ((bms_ina226_result == INA226_NEW_DATA)
+        && (current->valid != 0u))
+    {
+        /* 电流和电压来自同一份完整驱动读取结果。 */
+        Bms_EnergyUpdate(
+            &bms_energy_counter,
+            current->value,
+            bms_ina226_sample.bus_mv,
+            current->timestamp_ms);
+    }
+    else if ((bms_ina226_result == INA226_ERROR)
+             || (current->valid == 0u)
+             || ((uint32_t)(HAL_GetTick() - current->timestamp_ms)
+                 > BMS_CURRENT_MAX_AGE_MS))
+    {
+        Bms_EnergyBreak(&bms_energy_counter);
+    }
+
+    /* NO_DATA不重复累计，超时后则切断积分区间。 */
+    acquisition->energy = bms_energy_counter.totals;
+}
+
+void Bms_SamplingBreakEnergy(void)
+{
+    Bms_EnergyBreak(&bms_energy_counter);
+}
+
 uint8_t Bms_SamplingInit(void)
 {
+    Bms_EnergyInit(&bms_energy_counter, BMS_CURRENT_MAX_AGE_MS);
     SampleFilter_Init(&bms_adc_filter);
     if (Bsp_AnalogInit() == 0u)
     {
@@ -185,6 +218,7 @@ void Bms_SamplingRead(BmsAcquisition *acquisition, uint32_t now_ms)
 
     Bms_UpdateDemoSample(&acquisition->sample, now_ms);
     Bms_UpdateCurrentMeasurement(&acquisition->sample);
+    Bms_UpdateEnergy(acquisition);
     acquisition->ina_result = bms_ina226_result;
     acquisition->bus_mv = bms_ina226_sample.bus_mv;
     /* 读取失败也发布快照，让保护看到无效状态。 */

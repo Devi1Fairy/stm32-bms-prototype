@@ -52,6 +52,10 @@ private:
     void stopRecording();
     void updateRecordingUi();
 
+    bool hasFreshStatistics() const;
+    void acceptStatistics(const BmsStatRecord &record);
+    void showStatistics();
+
     BmsCsvLogger m_csvLogger;
     BmsLogRecord m_latestReport;
     bool m_haveReport = false;
@@ -79,6 +83,14 @@ private:
     BmsLineBuffer m_lineBuffer;
     QElapsedTimer m_lastReport;
     QTimer m_reportTimer;
+
+    BmsStatRecord m_latestStat;
+    bool m_haveStat = false;
+    QElapsedTimer m_lastStat;
+
+    // 本次连接内检测到的统计分段，从1开始。
+    // 发现累计值回退时增加，避免跨复位计算增量。
+    quint64 m_statSegment = 0;
 };
 
 #endif // MAINWINDOW_H

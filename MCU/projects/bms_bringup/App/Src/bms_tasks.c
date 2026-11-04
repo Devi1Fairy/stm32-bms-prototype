@@ -11,6 +11,7 @@
 
 /* 控制器只由保护任务修改，其他任务通过报告副本读取结果。 */
 static BmsSample bms_sample = {0};
+static BmsEnergyTotals bms_control_energy = {0};
 static BmsController bms_controller;
 static int32_t bms_control_ina_result = -1;
 static uint32_t bms_control_bus_mv = 0u;
@@ -41,6 +42,7 @@ static void Bms_PublishTelemetry(void)
     /* 只交出需要显示的结果，不把控制器的内部恢复计时器传给通信层。 */
     BmsTelemetry report = {0};
     report.sample = bms_sample;
+    report.energy = bms_control_energy;
     report.status.state = bms_controller.machine.state;
     report.status.active_faults = bms_controller.active_faults;
     report.status.latched_faults = bms_controller.machine.latched_faults;
@@ -62,6 +64,7 @@ static uint8_t Bms_TakeLatestAcquisition(void)
         return 0u;
     }
     bms_sample = acquisition.sample;
+    bms_control_energy = acquisition.energy;
     bms_control_ina_result = acquisition.ina_result;
     bms_control_bus_mv = acquisition.bus_mv;
     bms_control_sample_count = acquisition.sample_count;
@@ -153,6 +156,10 @@ void Bms_RunSampleTask(void)
         {
             Bms_SamplingRead(&acquisition, HAL_GetTick());
             (void)Bms_IpcPublishAcquisition(&acquisition);
+        }
+        else
+        {
+            Bms_SamplingBreakEnergy();
         }
         bms_rtos_sample_stack_free_words =
             (uint32_t)uxTaskGetStackHighWaterMark(NULL);

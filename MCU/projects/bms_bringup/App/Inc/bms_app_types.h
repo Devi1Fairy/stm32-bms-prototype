@@ -3,6 +3,7 @@
 
 #include "bms_types.h"
 #include "bms_status.h"
+#include "bms_energy.h"
 
 /* 消息只包含值，不携带任务句柄、外设句柄或控制器内部指针。 */
 typedef struct
@@ -11,6 +12,7 @@ typedef struct
     int32_t ina_result;
     uint32_t bus_mv;
     uint32_t sample_count;
+    BmsEnergyTotals energy;
 } BmsAcquisition;
 
 typedef struct
@@ -22,6 +24,7 @@ typedef struct
     uint32_t control_count;
     uint32_t control_max_interval_ms;
     uint32_t sample_count;
+    BmsEnergyTotals energy;
 } BmsTelemetry;
 
 #endif

@@ -26,8 +26,9 @@ def main():
         "test_ipc_comm": ["App/Src/bms_ipc.c", "App/Src/bms_comm.c", "App/Src/bms_config.c",
                           "Components/Protocol/Src/bms_protocol.c", "Tests/host/mock_queue.c"],
         "test_sampling": ["App/Src/bms_sampling.c", "App/Src/bms_config.c", "Devices/Src/ina226.c",
-                          "Components/Sensing/Src/ntc.c", "Components/Sensing/Src/sample_filter.c"],
+                          "Components/Sensing/Src/ntc.c","Components/Bms/Src/bms_energy.c", "Components/Sensing/Src/sample_filter.c"],
         "test_board": ["Bsp/Src/bsp_analog.c", "Bsp/Src/bsp_output.c", "Bsp/Src/bsp_transport.c"],
+        "test_energy": ["Components/Bms/Src/bms_energy.c"],
     }
     groups += [(PROJECT / f"Tests/host/{name}.c", [PROJECT / f for f in files])
                for name, files in extra.items()]

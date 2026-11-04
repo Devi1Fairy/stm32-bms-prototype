@@ -31,7 +31,9 @@ bool BmsCsvLogger::start(const QString &fileName)
     const QByteArray header =
         "rx_utc,record_ms,state,load,clear_allowed,"
         "active_faults_hex,latched_faults_hex,"
-        "cell0_mv_simulated,temp_est_dC,current_ma,iv,i_age_ms,i_src\n";
+        "cell0_mv_simulated,temp_est_dC,current_ma,iv,i_age_ms,i_src,"
+        "stat_fresh,stat_age_ms,stat_segment,q_out_uah,q_in_uah,"
+        "e_out_uwh,e_in_uwh,stat_covered_ms,stat_gaps,stat_overflow\n";
 
     if (!writeBytes(header))
     {
@@ -42,7 +44,9 @@ bool BmsCsvLogger::start(const QString &fileName)
     return true;
 }
 
-bool BmsCsvLogger::append(const BmsLogRecord &record)
+bool BmsCsvLogger::append(const BmsLogRecord &record,
+                          const BmsStatRecord *stat,
+                          qint64 statAgeMs, quint64 segment)
 {
     if (!isRecording())
     {
@@ -53,7 +57,7 @@ bool BmsCsvLogger::append(const BmsLogRecord &record)
     m_error.clear();
 
     // 保留MCU原始单位和有效标志，方便之后分析异常。
-    const QStringList fields = {
+    QStringList fields = {
         QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs),
         QString::number(m_clock.elapsed()),
         QString::number(record.state),
@@ -70,6 +74,34 @@ bool BmsCsvLogger::append(const BmsLogRecord &record)
         QString::number(record.currentAgeMs),
         QString::number(record.currentSource)
     };
+
+    // 每条BMS记录附带最近一次有效STAT。
+    // 两种报文异步到达，stat_age_ms记录这份统计已接收多久。
+    if (stat != nullptr && statAgeMs >= 0
+        && statAgeMs < BmsStatTimeoutMs && segment != 0)
+    {
+        fields += QStringList{
+            QStringLiteral("1"),
+            QString::number(statAgeMs),
+            QString::number(segment),
+            QString::number(stat->qOutUah),
+            QString::number(stat->qInUah),
+            QString::number(stat->eOutUwh),
+            QString::number(stat->eInUwh),
+            QString::number(stat->coveredMs),
+            QString::number(stat->gaps),
+            QString::number(stat->overflow ? 1 : 0)
+        };
+    }
+    else
+    {
+        fields.append(QStringLiteral("0"));
+
+        // 没有统计或统计已过期时留空。
+        // 填0会被误认为MCU实际测得的累计量为零。
+        for (int i = 0; i < 9; ++i)
+            fields.append(QString());
+    }
 
     const QByteArray line = (fields.join(',') + '\n').toUtf8();
 
