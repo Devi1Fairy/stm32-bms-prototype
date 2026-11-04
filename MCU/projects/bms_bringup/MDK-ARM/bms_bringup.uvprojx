@@ -1979,6 +1979,16 @@
               <FileType>5</FileType>
               <FilePath>..\Components\Bms\Inc\bms_energy.h</FilePath>
             </File>
+            <File>
+              <FileName>bms_health.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>..\Components\Bms\Inc\bms_health.h</FilePath>
+            </File>
+            <File>
+              <FileName>bms_health.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Components\Bms\Src\bms_health.c</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>

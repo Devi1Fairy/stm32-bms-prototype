@@ -29,6 +29,7 @@ def main():
                           "Components/Sensing/Src/ntc.c","Components/Bms/Src/bms_energy.c", "Components/Sensing/Src/sample_filter.c"],
         "test_board": ["Bsp/Src/bsp_analog.c", "Bsp/Src/bsp_output.c", "Bsp/Src/bsp_transport.c"],
         "test_energy": ["Components/Bms/Src/bms_energy.c"],
+        "test_health": ["Components/Bms/Src/bms_health.c"],
     }
     groups += [(PROJECT / f"Tests/host/{name}.c", [PROJECT / f for f in files])
                for name, files in extra.items()]

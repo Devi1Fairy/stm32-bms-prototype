@@ -8,6 +8,7 @@
 #include "cmsis_os.h"
 #include "FreeRTOS.h"
 #include "task.h"
+#include "bms_health.h"
 
 /* 控制器只由保护任务修改，其他任务通过报告副本读取结果。 */
 static BmsSample bms_sample = {0};
@@ -29,6 +30,57 @@ static volatile uint32_t bms_rtos_comm_stack_free_words = 0u;
 static volatile uint32_t bms_rtos_heap_free_bytes = 0u;
 static volatile uint32_t bms_control_cycle_count = 0u;
 static volatile uint32_t bms_control_max_interval_ms = 0u;
+
+/* 静态对象在启动时清零；报到写入和检查快照都使用短临界区。 */
+static BmsTaskHealth bms_task_health = {0};
+
+static volatile uint32_t bms_health_seen_mask = 0u;
+static volatile uint32_t bms_health_missing_mask = BMS_HEALTH_ALL_MASK;
+static volatile uint32_t bms_health_ok = 0u;
+static volatile uint32_t bms_health_check_count = 0u;
+
+/* 仅供本轮漏报实验：
+ * 位为1时，对应任务跳过报到，但继续原本工作。
+ */
+static volatile uint32_t bms_health_test_skip_mask = 0u;
+
+static void Bms_ReportTaskProgress(BmsHealthTask task)
+{
+    uint32_t index = (uint32_t)task;
+
+    if ((index >= BMS_HEALTH_TASK_COUNT)
+        || ((bms_health_test_skip_mask & (1u << index)) != 0u))
+        return;
+
+    /* seen_mask需要读、修改、写回。
+     * 临界区防止不同任务更新时互相覆盖。
+     */
+    taskENTER_CRITICAL();
+    Bms_HealthMark(&bms_task_health, task, HAL_GetTick());
+    taskEXIT_CRITICAL();
+}
+
+static void Bms_CheckTaskHealth(void)
+{
+    BmsTaskHealth snapshot;
+    uint32_t now_ms;
+
+    /* 快速复制，之后使用本地快照检查。 */
+    taskENTER_CRITICAL();
+    snapshot = bms_task_health;
+    taskEXIT_CRITICAL();
+
+    /* 先复制快照再取时间，避免报到时间比检查时间晚。 */
+    now_ms = HAL_GetTick();
+
+    bms_health_seen_mask = snapshot.seen_mask;
+
+    bms_health_missing_mask = Bms_HealthMissing(
+        &snapshot, now_ms, BMS_HEALTH_TIMEOUT_MS);
+
+    bms_health_ok = bms_health_missing_mask == 0u ? 1u : 0u;
+    bms_health_check_count++;
+}
 
 static void Bms_UpdateIndicators(void)
 {
@@ -126,6 +178,7 @@ void Bms_RunTask(void)
         bms_rtos_app_stack_free_words =
             (uint32_t)uxTaskGetStackHighWaterMark(NULL);
         bms_rtos_heap_free_bytes = (uint32_t)xPortGetFreeHeapSize();
+        Bms_ReportTaskProgress(BMS_HEALTH_CONTROL);
         vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(BMS_CONTROL_PERIOD_MS));
     }
 }
@@ -163,6 +216,8 @@ void Bms_RunSampleTask(void)
         }
         bms_rtos_sample_stack_free_words =
             (uint32_t)uxTaskGetStackHighWaterMark(NULL);
+
+        Bms_ReportTaskProgress(BMS_HEALTH_SAMPLE);
     }
 }
 
@@ -196,6 +251,7 @@ void Bms_RunCommTask(void)
             bms_rtos_comm_stack_free_words =
                 (uint32_t)uxTaskGetStackHighWaterMark(NULL);
         }
+        Bms_ReportTaskProgress(BMS_HEALTH_COMM);
         delay_ms = Bms_IpcCommDelayMs();
         osDelay(delay_ms == 0u ? 1u : delay_ms);
     }
@@ -212,5 +268,8 @@ void Bms_RunHeartbeatTask(void)
         bms_rtos_led_count++;
         bms_rtos_led_stack_free_words =
             (uint32_t)uxTaskGetStackHighWaterMark(NULL);
+
+        Bms_ReportTaskProgress(BMS_HEALTH_LED);
+        Bms_CheckTaskHealth();
     }
 }
