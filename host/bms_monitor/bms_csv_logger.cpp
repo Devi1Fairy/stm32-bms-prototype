@@ -33,7 +33,8 @@ bool BmsCsvLogger::start(const QString &fileName)
         "active_faults_hex,latched_faults_hex,"
         "cell0_mv_simulated,temp_est_dC,current_ma,iv,i_age_ms,i_src,"
         "stat_fresh,stat_age_ms,stat_segment,q_out_uah,q_in_uah,"
-        "e_out_uwh,e_in_uwh,stat_covered_ms,stat_gaps,stat_overflow\n";
+        "e_out_uwh,e_in_uwh,stat_covered_ms,stat_gaps,stat_overflow,"
+        "bus_fields_present,bus_mv_measured,bus_v,bus_age_ms,bus_usable\n";
 
     if (!writeBytes(header))
     {
@@ -102,6 +103,26 @@ bool BmsCsvLogger::append(const BmsLogRecord &record,
         for (int i = 0; i < 9; ++i)
             fields.append(QString());
     }
+
+    // 保留原始母线值，即使无效/过期也不伪造为0。
+    // 分析时结合有效位、年龄和bus_usable判断是否能使用。
+    fields.append(QString::number(record.busFieldsPresent ? 1 : 0));
+
+    if (record.busFieldsPresent)
+    {
+        fields += QStringList{
+            QString::number(record.busMv),
+            QString::number(record.busValid),
+            QString::number(record.busAgeMs)
+        };
+    }
+    else
+    {
+        for (int i = 0; i < 3; ++i)
+            fields.append(QString());
+    }
+
+    fields.append(QString::number(BmsBusUsable(record) ? 1 : 0));
 
     const QByteArray line = (fields.join(',') + '\n').toUtf8();
 

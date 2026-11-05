@@ -36,6 +36,15 @@ void BmsTrendHistory::clear()
 bool BmsTrendHistory::value(const BmsLogRecord &record,
                             int channel, double &result)
 {
+    if (channel == 3)
+    {
+        if (!BmsBusUsable(record))
+            return false;
+
+        result = record.busMv / 1000.0;
+        return true;
+    }
+
     if (channel == 2)
     {
         if (record.currentValid != 1
@@ -149,7 +158,7 @@ void BmsTrendWidget::reset()
 
 void BmsTrendWidget::setChannel(int channel)
 {
-    if (channel >= 0 && channel <= 2)
+    if (channel >= 0 && channel <= 3)
     {
         m_channel = channel;
         update();
@@ -169,7 +178,8 @@ void BmsTrendWidget::paintEvent(QPaintEvent *)
     const QStringList names = {
         QStringLiteral("模拟单体电压 / V"),
         QStringLiteral("NTC估算温度 / ℃"),
-        QStringLiteral("INA226电流 / mA")
+        QStringLiteral("INA226电流 / mA"),
+        QStringLiteral("INA226母线电压 / V")
     };
 
     QString status = QStringLiteral("最近60秒");
@@ -217,7 +227,7 @@ void BmsTrendWidget::paintEvent(QPaintEvent *)
     if (found)
     {
         // 数值不变时也留出纵轴空间。
-        const double minimumPadding[] = {0.02, 0.5, 1.0};
+        const double minimumPadding[] = {0.02, 0.5, 1.0,  0.02};
 
         const double padding = std::max(
             (high - low) * 0.1,
@@ -261,7 +271,7 @@ void BmsTrendWidget::paintEvent(QPaintEvent *)
             Qt::AlignRight | Qt::AlignVCenter,
             QString::number(
                 low + fraction * (high - low),
-                'f', m_channel == 0 ? 2 : 1));
+                'f', m_channel == 3 ? 3 : (m_channel == 0 ? 2 : 1)));
     }
 
     painter.drawRect(plot);

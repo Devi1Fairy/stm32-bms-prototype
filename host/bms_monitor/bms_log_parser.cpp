@@ -63,6 +63,48 @@ bool ParseBmsLog(const QByteArray &line, BmsLogRecord &result)
     next.currentAgeMs = read("i_age");
     next.currentSource = read("i_src");
 
+    // 旧固件只有bus_mv，不足以判断这份母线测量是否有效。
+    // 一旦出现有效性或年龄字段，三项必须一起存在且合法。
+    next.busFieldsPresent = fields.contains("bus_v") || fields.contains("bus_age");
+
+    if (next.busFieldsPresent)
+    {
+        const auto readBus = [&fields, &valid](const char *key) -> qint64
+        {
+            const QByteArray value = fields.value(key);
+
+            if (value.isEmpty())
+            {
+                valid = false;
+                return 0;
+            }
+
+            // 母线字段只接受非负十进制整数。
+            for (char c : value)
+            {
+                if (c < '0' || c > '9')
+                {
+                    valid = false;
+                    return 0;
+                }
+            }
+
+            bool ok = false;
+            const qint64 number = value.toLongLong(&ok, 10);
+
+            valid = valid && ok;
+            return number;
+        };
+
+        next.busMv = readBus("bus_mv");
+        next.busValid = readBus("bus_v");
+        next.busAgeMs = readBus("bus_age");
+
+        if (next.busMv > 36000 || next.busValid > 1
+            || next.busAgeMs > std::numeric_limits<quint32>::max())
+            valid = false;
+    }
+
     const qint64 minSigned = std::numeric_limits<qint32>::min();
     const qint64 maxSigned = std::numeric_limits<qint32>::max();
     const qint64 maxUnsigned = std::numeric_limits<quint32>::max();
@@ -210,4 +252,13 @@ void BmsLineBuffer::reset()
 {
     m_pending.clear();
     m_discarding = false;
+}
+
+bool BmsBusUsable(const BmsLogRecord &record)
+{
+    // 判断本条报文携带的采样状态。
+    // 整体上报超时仍由窗口原来的逻辑处理。
+    return record.busFieldsPresent && record.busValid == 1
+           && record.busMv >= 0 && record.busMv <= 36000
+           && record.busAgeMs >= 0 && record.busAgeMs < BmsBusMaxAgeMs;
 }

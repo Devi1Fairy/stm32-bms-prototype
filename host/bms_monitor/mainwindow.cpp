@@ -61,7 +61,8 @@ MainWindow::MainWindow(QWidget *parent)
     ui->trendCombo->addItems({
         QStringLiteral("模拟单体电压 / V"),
         QStringLiteral("NTC估算温度 / ℃"),
-        QStringLiteral("INA226电流 / mA")
+        QStringLiteral("INA226电流 / mA"),
+        QStringLiteral("INA226母线电压 / V")
     });
 
     connect(ui->trendCombo, &QComboBox::currentIndexChanged,
@@ -430,13 +431,23 @@ void MainWindow::showTelemetry(const BmsLogRecord &record)
                                 ? QString::number(record.currentMa)
                                 : QStringLiteral("--（无有效实采）");
 
+    QString bus = QStringLiteral("--（缺少有效性字段）");
+
+    if (record.busFieldsPresent)
+    {
+        bus = BmsBusUsable(record)
+        ? QString::number(record.busMv / 1000.0, 'f', 3) + " V"
+        : QStringLiteral("--（无效/过期）");
+    }
+
     ui->telemetryLabel->setText(
         QStringLiteral(
             "数据：已收到完整上报\n"
             "模拟单体电压：%1 V    NTC估算：%2 ℃\n"
             "INA226电流：%3 mA\n"
             "状态：%4    负载许可：%5\n"
-            "当前故障：0x%6    锁存故障：0x%7")
+            "当前故障：0x%6    锁存故障：0x%7\n"
+            "实测母线电压：%8")
             .arg(cell)
             .arg(temperature)
             .arg(current)
@@ -445,7 +456,8 @@ void MainWindow::showTelemetry(const BmsLogRecord &record)
                      ? QStringLiteral("开启")
                      : QStringLiteral("关闭"))
             .arg(record.activeFaults, 8, 16, QLatin1Char('0'))
-            .arg(record.latchedFaults, 8, 16, QLatin1Char('0')));
+            .arg(record.latchedFaults, 8, 16, QLatin1Char('0'))
+            .arg(bus));
 }
 
 void MainWindow::checkReportTimeout()
